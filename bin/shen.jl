@@ -11,7 +11,7 @@ if length(ARGS) >= 1 && ARGS[1] == "--boot-only"
     boot!(get(ENV, "SHEN_VERBOSE", "") == "1")
     t1 = time()
     println("Kernel loaded in $(round(t1 - t0, digits=3))s")
-    println("version: ", Base.invokelatest(F["version"]))
+    println("version: ", ShenJulia.Prims.force(Base.invokelatest(ShenJulia.F["version"])))
     exit(0)
 end
 
