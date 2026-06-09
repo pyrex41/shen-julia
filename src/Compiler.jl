@@ -282,6 +282,81 @@ function try_lit_const(form, env::Dict{String,String})
     return "KDATA[$(length(KDATA))]"
 end
 
+# Collect the KL variable names that occur free in `form` and are bound to a Julia
+# local in `env` (so they could be a mutable while-loop param/let-local). `bound` holds
+# names introduced by enclosing lambdas inside `form` (shadowed — not captured).
+#
+# Why: closures emitted for (freeze ...) / (lambda ...) capture Julia locals *by
+# reference*. cdefun compiles self-tail recursion as a `while true ... continue` loop that
+# rebinds the param locals in place (parallel-assignment snapshot fixes the order, but the
+# vars themselves are still mutated). A closure created in one iteration and thawed later
+# (the norm for Prolog CPS continuations, e.g. shen.lzy=! / shen.lzy / left) would then see
+# the *mutated* values, not the ones live when it was created — manifesting as "tl of
+# non-cons" deep in einsteins-riddle. Snapshotting the free vars into fresh `let` bindings
+# per closure makes each capture immutable, matching the BIND design in Prims.jl.
+function collect_free_env!(acc::Vector{String}, seen::Set{String}, form, env::Dict{String,String}, bound::Set{String})
+    if is_symbol(form)
+        n = form.name
+        if !(n in bound) && haskey(env, n) && !(n in seen)
+            push!(seen, n); push!(acc, n)
+        end
+        return
+    end
+    is_cons(form) || return
+    head = car(form)
+    if is_symbol(head) && !(head.name in bound) && !haskey(env, head.name)
+        op = head.name
+        if op == "lambda"
+            v = car(cdr(form))
+            body = car(cdr(cdr(form)))
+            if is_symbol(v)
+                inner = copy(bound); push!(inner, v.name)
+                collect_free_env!(acc, seen, body, env, inner)
+                return
+            end
+        elseif op == "let"
+            # `let` binds its var only in the body; the value expr sees the outer scope.
+            v = car(cdr(form)); val = car(cdr(cdr(form))); lbody = car(cdr(cdr(cdr(form))))
+            collect_free_env!(acc, seen, val, env, bound)
+            if is_symbol(v)
+                inner = copy(bound); push!(inner, v.name)
+                collect_free_env!(acc, seen, lbody, env, inner)
+                return
+            end
+        end
+    end
+    cur = form
+    while is_cons(cur)
+        collect_free_env!(acc, seen, cur.h, env, bound)
+        cur = cur.t
+    end
+end
+
+function free_env_vars(form, env::Dict{String,String}, bound::Set{String})
+    acc = String[]; seen = Set{String}()
+    collect_free_env!(acc, seen, form, env, bound)
+    return acc
+end
+
+# Wrap a closure expression so that each free variable captured from the enclosing
+# (mutable) scope is snapshotted into a fresh `let` binding. `mkclosure(env2)` builds the
+# closure source given the (possibly remapped) env. The remap points captured KL names at
+# fresh cap-locals so the closure body reads the snapshot, not the live loop-local.
+function snapshot_closure(mkclosure, form_body, env::Dict{String,String}, extra_bound::Set{String})
+    frees = free_env_vars(form_body, env, extra_bound)
+    if isempty(frees)
+        return mkclosure(env)
+    end
+    binds = String[]
+    env2 = copy(env)
+    for kn in frees
+        cap = gen("cap")
+        push!(binds, "$cap = $(env[kn])")
+        env2[kn] = cap
+    end
+    return "(let $(join(binds, ", ")); $(mkclosure(env2)) end)"
+end
+
 function cexpr(form, env::Dict{String,String})
     if !is_cons(form)
         form isa Number && return cnum(form)
@@ -311,12 +386,17 @@ function cexpr(form, env::Dict{String,String})
         elseif op == "lambda"
             v = car(cdr(form))
             body = car(cdr(cdr(form)))
-            ln = gen("v")
-            e2 = extend(env, v.name, ln)
-            return "MKFUN(1, $ln -> $(cexpr(body, e2)))"
+            # Snapshot captured outer locals (the lambda param is bound, not captured).
+            return snapshot_closure(body, env, Set{String}([v.name])) do envc
+                ln = gen("v")
+                e2 = extend(envc, v.name, ln)
+                "MKFUN(1, $ln -> $(cexpr(body, e2)))"
+            end
         elseif op == "freeze"
             body = car(cdr(form))
-            return "MKFUN(0, () -> $(cexpr(body, env)))"
+            return snapshot_closure(body, env, Set{String}()) do envc
+                "MKFUN(0, () -> $(cexpr(body, envc)))"
+            end
         elseif op == "defun"
             error("defun in expression position")
         elseif op == "type"
