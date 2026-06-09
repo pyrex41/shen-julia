@@ -54,6 +54,8 @@ is_bounce(x) = x isa Bounce
     is_bounce(x) || return x
     # The bounced fn is reached under a top-level `invokelatest` (every public entry point
     # establishes one), so we are already in the latest world age and can call it directly.
+    # (World-age recovery for runtime-eval'd closures lives in _safe_caller, the boundary
+    # where the raw — possibly too-new — impl is actually invoked.)
     while true
         b = x
         x = b.f(b.args...)
@@ -123,7 +125,23 @@ function _safe_caller(rawfn::Function, klname::String="")
     # top-level one — see force) and no per-call frame/Dict allocation (that was diagnostic
     # only). This is on the hot path for every KL function call.
     return function(args...)
-        force(rawfn(args...))
+        try
+            return force(rawfn(args...))
+        catch e
+            # World-age recovery: `rawfn` may be a closure `Core.eval`d by a *runtime*
+            # define/defmacro (a macro stored in *macros*, a yacc-compiled fn, etc.) that
+            # lives in a world NEWER than this frame (which is running under a stale
+            # top-level invokelatest established before that eval). A direct call then
+            # throws a "method too new" MethodError whose `.f` is `rawfn` itself. Retry that
+            # one call in the latest world via invokelatest. The try/catch is free on the
+            # success path (only pays when an exception is actually thrown). The retry is
+            # semantics-preserving even for a genuine MethodError: invokelatest would just
+            # re-throw the same error from the latest world. See handoff.md "Julia world age".
+            if e isa MethodError && e.f === rawfn
+                return force(Base.invokelatest(rawfn, args...))
+            end
+            rethrow()
+        end
     end
 end
 
