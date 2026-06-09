@@ -248,61 +248,17 @@ catch e
     println("  microbench error (nonfatal): ", typeof(e), " ", e)
 end
 
-# List processing micros using Base.Iterators + IterTools + Transducers (as suggested
-# for fusion, richer combinators, and to complement the self-tail numeric while-loop win).
-# Shen lists are proper Cons cells, so we provide host fast paths that traverse via
-# the iterator protocol (Cons is now a proper Julia iterator) and use IterTools for
-# things like imap (lazy), partition, groupby, distinct, plus Transducers for fusion.
-# This avoids the recursive/accum+reverse style that the kernel's own map/fold often use.
-# See:
-#   https://docs.julialang.org/en/v1/base/iterators/
-#   https://github.com/JuliaFolds/Transducers.jl
-#   https://juliacollections.github.io/IterTools.jl/stable/
-#
-# These are exercised directly from Julia side (pure fns). In a fuller integration we
-# could override shen.map / shen.foldl etc. for pure cases or provide shen.fast-* builtins.
-println("\n=== List processing (Iterators + IterTools + Transducers) ===")
+# List processing micro: a self-tail list walk (length via accumulator), exercising the
+# while+rebind self-tail optimization and the inlined cons/tl/+ prims on a Cons list.
+println("\n=== List processing (self-tail) ===")
 try
     N = 5000
-    # Build input list (from_vec is the inverse of the manual walk)
     xs = Runtime.from_vec(collect(1:N))
-
-    # map increment - host fused path
-    local t0 = time(); ys = Runtime.map_list(x -> x + 1, xs); local t1 = time()
-    println("  map_list +1 (N=", N, ") len=", (let c=ys; n=0; while Runtime.is_cons(c); n+=1; c=c.t; end; n end),
-            " time=", round(t1-t0, digits=5), "s  (fused via Transducers.Map)")
-
-    # chained map + filter (the real win for composition)
-    local t0 = time(); zs = Runtime.filter_list(iseven, Runtime.map_list(x -> x * 2, xs)); local t1 = time()
-    println("  map(*2) |> filter(even) (N=", N, ") len=", (let c=zs; n=0; while Runtime.is_cons(c); n+=1; c=c.t; end; n end),
-            " time=", round(t1-t0, digits=5), "s  (fused pipeline, single traversal)")
-
-    # fold / sum via fold_list (reduction, no output list)
-    local t0 = time(); s = Runtime.fold_list(+, 0, xs); local t1 = time()
-    println("  fold_list + (sum 1..", N, ") = ", s, " time=", round(t1-t0, digits=5), "s")
-
-    # IterTools-powered: partition (chunking lists)
-    local t0 = time(); parts = Runtime.partition_list(100, xs); local t1 = time()
-    nparts = (let c=parts; n=0; while Runtime.is_cons(c); n+=1; c=c.t; end; n end)
-    println("  partition_list 100 (N=", N, ") -> ", nparts, " sublists time=", round(t1-t0, digits=5), "s  (IterTools.partition)")
-
-    # IterTools: groupby (e.g. even/odd)
-    local t0 = time(); groups = Runtime.groupby_list(iseven, xs); local t1 = time()
-    println("  groupby_list iseven (N=", N, ") time=", round(t1-t0, digits=5), "s  (IterTools.groupby)")
-
-    # IterTools: distinct (remove dups)
-    dups = Runtime.from_vec([1,2,2,3,3,3,4])
-    local t0 = time(); uniq = Runtime.distinct_list(dups); local t1 = time()
-    println("  distinct_list time=", round(t1-t0, digits=5), "s  (IterTools.distinct)")
-
-    # Compare a tiny self-recursive list walk (uses the while optimization)
-    # e.g. a handwritten length via self-tail (for illustration)
     df_len = Runtime.read_all("(defun len (L A) (if (cons? L) (len (tl L) (+ A 1)) A))")[1]
     Prims.compile_and_load!(Compiler.compile_top(df_len), "list-len-self")
     local t0 = time(); l = Prims.force(Base.invokelatest(Prims.F["len"], xs, 0)); local t1 = time()
     println("  self-tail len via Cons (N=", N, ") = ", l, " time=", round(t1-t0, digits=5), "s  (while+rebind on lists)")
-
-    println("  list microbench: ok (Iterators/IterTools/Transducers + self-tail complement)")
+    println("  list microbench: ok")
 catch e
     println("  list microbench error (nonfatal): ", typeof(e), " ", e)
 end

@@ -28,6 +28,8 @@ function boot!(verbose::Bool=false)
     Boot.setup_streams!()
     Boot.load_kernel!(verbose)
     Boot.initialise!()
+    # Swap in fast host implementations of hot list builtins, overriding the KL defs.
+    Prims.install_fast_builtins!()
 end
 
 run_kl_string(src) = Boot.run_kl_string(src)

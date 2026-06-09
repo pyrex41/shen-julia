@@ -9,11 +9,20 @@ module Compiler
 using ..Runtime  # bare to allow Runtime.XXX in bc dups + names
 
 export ARITY, KDATA, prescan, compile_top, compile_expr_chunk, cexpr, ctail
-export bc_compile_top, bc_cdefun, bc_compile_expr_chunk, BC_F
 
 const ARITY = Dict{String, Int}()
 const KDATA = Any[]
 const PRIMS = Set{String}()
+
+# Peephole: KL prims that are never redefined and have a named @inline host implementation
+# in Prims. When applied at exact arity in head position, the compiler emits a direct call
+# to the host function (resolved in the Prims module where generated code is eval'd) instead
+# of `F[name](…)` — no Dict lookup, no Bounce in tail position, and Julia can inline it.
+const INLINE_PRIM = Dict{String, String}(
+    "+" => "kl_add", "-" => "kl_sub", "*" => "kl_mul", "/" => "kl_div",
+    ">" => "kl_gt", "<" => "kl_lt", ">=" => "kl_gte", "<=" => "kl_lte",
+    "=" => "kl_eq", "cons" => "kl_cons", "hd" => "kl_hd", "tl" => "kl_tl",
+)
 
 car(x::Cons) = x.h
 cdr(x::Cons) = x.t
@@ -95,15 +104,23 @@ function catom(form, env::Dict{String,String})
     end
 end
 
-# Leverage multiple dispatch for common literal cases in codegen (helps inference
-# in the compiler itself, even if the emitted code is still dynamic for KL values).
-catom(x::Number, env) = cnum(x)
-catom(x::Bool, env)   = x ? "true" : "false"
-catom(x::String, env) = qstr(x)
-catom(::typeof(NIL), env) = "NIL"
+# Function dispatch slots. Calls to known functions go through an integer-indexed
+# Vector{Function} (Prims.FV) instead of the string-keyed Dict F: the decomposition in
+# bin/bench_callpath.jl showed the String-Dict hashing was ~37% of per-call overhead, and
+# an integer slot removes it entirely (the rest — dynamic dispatch through an abstract
+# Function — is the irreducible dynamic-language tax). Each function name gets one stable
+# slot; Prims.setfn! stores the fn at that slot (and still in F for APP / the public API).
+const FNSLOT = Dict{String, Int}()
+const _NSLOT = Ref(0)
+function fnslot(name::String)::Int
+    get!(FNSLOT, name) do
+        _NSLOT[] += 1
+        _NSLOT[]
+    end
+end
 
 function ftab_ref(name::String)
-    return "F[$(qstr(name))]"
+    return "FV[$(fnslot(name))]"
 end
 
 function kl_call(form::Cons, env::Dict{String,String})
@@ -117,6 +134,8 @@ function kl_call(form::Cons, env::Dict{String,String})
         ar = get(ARITY, name, nothing)
         if ar !== nothing
             if length(args) == ar
+                inl = get(INLINE_PRIM, name, nothing)
+                inl !== nothing && return "$inl($(argstr))"
                 return "$(ftab_ref(name))($(argstr))"
             elseif length(args) < ar
                 pack = isempty(args) ? "Any[]" : "[$(argstr)]"
@@ -124,20 +143,26 @@ function kl_call(form::Cons, env::Dict{String,String})
             else
                 first = cargs[1:ar]
                 rest = cargs[ar+1:end]
-                return "APP($(ftab_ref(name))($(join(first, ", "))), $(join(rest, ", ")))"
+                return "force(APP($(ftab_ref(name))($(join(first, ", "))), $(join(rest, ", "))))"
             end
         else
+            # Dynamic function name (arity unknown at compile time): goes through APP, which
+            # returns a Bounce. This is VALUE position (cexpr), so force it — otherwise an
+            # unforced Bounce leaks into the surrounding expression (e.g. consed into a list
+            # by a higher-order fn, then later "applied" -> "attempt to apply a non-function").
             if isempty(args)
-                return "APP($(symlit(name)))"
+                return "force(APP($(symlit(name))))"
             end
-            return "APP($(symlit(name)), $(argstr))"
+            return "force(APP($(symlit(name)), $(argstr)))"
         end
     else
+        # Computed head (e.g. a variable holding a function, as in shen.map-h's (V f x)).
+        # Value position -> force the APP result for the same reason as above.
         hv = cexpr(head, env)
         if isempty(args)
-            return "APP($hv)"
+            return "force(APP($hv))"
         end
-        return "APP($hv, $(argstr))"
+        return "force(APP($hv, $(argstr)))"
     end
 end
 
@@ -160,12 +185,28 @@ function kl_call_tail(form::Cons, env::Dict{String,String}, selfname::Union{Stri
         if ar !== nothing
             if length(args) == ar
                 if selfname !== nothing && name == selfname && length(self_lnames) == ar
-                    rebinds = String[]
-                    for i in 1:ar
-                        push!(rebinds, "$(self_lnames[i]) = $(cargs[i])")
+                    # Self-tail call -> rebind params and loop. This is a PARALLEL assignment:
+                    # a later argument's new value may read a parameter that an earlier rebind
+                    # would already have overwritten (e.g. shen.reverse-help does
+                    # (self (tl L) (cons (hd L) Acc)) — the new Acc needs the OLD L). Snapshot
+                    # every new value into a temp first, then assign all params.
+                    if ar == 1
+                        return "$(self_lnames[1]) = $(cargs[1]); continue"
                     end
-                    return join(rebinds, "; ") * "; continue"
+                    tmps = [gen("st") for _ in 1:ar]
+                    lines = String[]
+                    for i in 1:ar
+                        push!(lines, "$(tmps[i]) = $(cargs[i])")
+                    end
+                    for i in 1:ar
+                        push!(lines, "$(self_lnames[i]) = $(tmps[i])")
+                    end
+                    return join(lines, "; ") * "; continue"
                 end
+                # Prims don't recurse — emit a direct inline call instead of a Bounce (which
+                # would allocate + force). ctail wraps this in `return`.
+                inl = get(INLINE_PRIM, name, nothing)
+                inl !== nothing && return "$inl($(argstr))"
                 return "bounce($(ftab_ref(name)), $(argstr))"
             elseif length(args) < ar
                 pack = isempty(args) ? "Any[]" : "[$(argstr)]"
@@ -478,7 +519,7 @@ local $rawname = function($paramstr)
     end
 end
 let w = _safe_caller($rawname, $(qstr(name)))
-    F[$(qstr(name))] = w
+    setfn!($(qstr(name)), w)
     FA[w] = $(length(params))
 end
 end""")
@@ -510,290 +551,6 @@ function compile_top(form)
         return cdefun(form)
     else
         return "($(cexpr(form, Dict{String,String}())));"
-    end
-end
-
-# ===================================================================
-# Bytecode VM compiler prototype (minimal effective)
-# - Instr + BytecodeFunc + BCClosure from Runtime
-# - bc_* mirror ctail/cexpr emitting ops for core forms only
-# - Used by eval_kl for user (define), run_kl, load .shen
-# - Kernel boot stays on source for full compat (trap etc)
-# ===================================================================
-
-const BC_F = Dict{String, Runtime.BytecodeFunc}()
-
-const _BC_OP = Dict{Symbol,UInt8}(
-    :LOAD_LOCAL => 0x00,
-    :STORE_LOCAL => 0x01,
-    :LOAD_CONST => 0x02,
-    :LOAD_UPVAL => 0x03,
-    :CALL => 0x04,
-    :TAIL_CALL => 0x05,
-    :SELF_TAIL_CALL => 0x06,
-    :RETURN => 0x07,
-    :JUMP => 0x08,
-    :JUMP_FALSE => 0x09,
-    :MAKE_CLOSURE => 0x0a,
-    :POP => 0x0b
-)
-
-mutable struct _BCtx
-    code::Vector{Runtime.Instr}
-    consts::Vector{Any}
-    locals::Dict{String,Int}
-    nextslot::Int
-    maxlocals::Int
-    selfname::Union{String,Nothing}
-end
-
-function _new_bctx(selfname::Union{String,Nothing}=nothing)
-    _BCtx(Runtime.Instr[], Any[], Dict{String,Int}(), 0, 0, selfname)
-end
-
-function _alloc_slot!(ctx::_BCtx, nm::String)
-    s = ctx.nextslot
-    ctx.nextslot += 1
-    ctx.locals[nm] = s
-    ctx.maxlocals = max(ctx.maxlocals, ctx.nextslot)
-    s
-end
-
-function _emit!(ctx::_BCtx, op::Symbol, a::Integer=0, b::Integer=0)
-    push!(ctx.code, Runtime.Instr(get(_BC_OP, op, 0xff), Int32(a), Int32(b)))
-    length(ctx.code) - 1
-end
-
-function _addc!(ctx::_BCtx, v::Any)
-    push!(ctx.consts, v)
-    length(ctx.consts) - 1
-end
-
-function _patch!(ctx::_BCtx, pos::Int, tgt::Int)
-    old = ctx.code[pos+1]
-    ctx.code[pos+1] = Runtime.Instr(old.op, Int32(tgt), old.b)
-end
-
-function bc_catom(form, ctx::_BCtx, env::Dict{String,Int})
-    if form isa Number || form isa String || form isa Bool || form === NIL
-        return (:const, _addc!(ctx, form))
-    elseif is_symbol(form)
-        if haskey(env, form.name)
-            return (:local, env[form.name])
-        else
-            return (:const, _addc!(ctx, form))
-        end
-    end
-    error("bc_catom")
-end
-
-function bc_kl_call(form::Cons, ctx::_BCtx, env::Dict{String,Int}, tailp::Bool)
-    head = car(form)
-    args = to_array(cdr(form))
-    for a in args
-        bc_cexpr(a, ctx, env)
-    end
-    na = length(args)
-    if is_symbol(head) && !haskey(env, head.name)
-        nm = head.name
-        tgt = haskey(BC_F, nm) ? BC_F[nm] : intern(nm)
-        ci = _addc!(ctx, tgt)
-        if tailp && ctx.selfname !== nothing && nm == ctx.selfname && get(ARITY, nm, -1) == na
-            _emit!(ctx, :SELF_TAIL_CALL, ci, na)
-            return
-        end
-        _emit!(ctx, tailp ? :TAIL_CALL : :CALL, ci, na)
-    else
-        bc_cexpr(head, ctx, env)
-        ci = _addc!(ctx, :__computed_fn__)
-        _emit!(ctx, tailp ? :TAIL_CALL : :CALL, ci, na)
-    end
-end
-
-function bc_cexpr(form, ctx::_BCtx, env::Dict{String,Int})
-    if !is_cons(form)
-        k, v = bc_catom(form, ctx, env)
-        _emit!(ctx, k == :local ? :LOAD_LOCAL : :LOAD_CONST, v)
-        return
-    end
-    head = car(form)
-    if is_symbol(head) && !haskey(env, head.name)
-        op = head.name
-        if op == "if"
-            test = car(cdr(form))
-            th = car(cdr(cdr(form)))
-            el = cdr(cdr(cdr(form)))
-            bc_cexpr(test, ctx, env)
-            jf = _emit!(ctx, :JUMP_FALSE, 0)
-            bc_cexpr(th, ctx, env)
-            je = _emit!(ctx, :JUMP, 0)
-            ep = length(ctx.code)
-            _patch!(ctx, jf, ep)
-            if is_cons(el)
-                bc_cexpr(car(el), ctx, env)
-            else
-                _emit!(ctx, :LOAD_CONST, _addc!(ctx, false))
-            end
-            _patch!(ctx, je, length(ctx.code))
-            return
-        elseif op == "cond"
-            clauses = to_array(cdr(form))
-            ejs = Int[]
-            for (i, cl) in enumerate(clauses)
-                bc_cexpr(car(cl), ctx, env)
-                jf = _emit!(ctx, :JUMP_FALSE, 0)
-                bc_cexpr(car(cdr(cl)), ctx, env)
-                if i < length(clauses)
-                    push!(ejs, _emit!(ctx, :JUMP, 0))
-                end
-                _patch!(ctx, jf, length(ctx.code))
-            end
-            _emit!(ctx, :LOAD_CONST, _addc!(ctx, false))
-            for j in ejs
-                _patch!(ctx, j, length(ctx.code))
-            end
-            return
-        elseif op == "let"
-            v = car(cdr(form))
-            val = car(cdr(cdr(form)))
-            body = car(cdr(cdr(cdr(form))))
-            bc_cexpr(val, ctx, env)
-            sl = _alloc_slot!(ctx, v.name)
-            _emit!(ctx, :STORE_LOCAL, sl)
-            e2 = copy(env)
-            e2[v.name] = sl
-            bc_cexpr(body, ctx, e2)
-            return
-        elseif op == "do"
-            fs = flatten_do(form)
-            for i in 1:length(fs)-1
-                bc_cexpr(fs[i], ctx, env)
-                _emit!(ctx, :POP)
-            end
-            bc_cexpr(fs[end], ctx, env)
-            return
-        elseif op in ("and", "or")
-            a = car(cdr(form))
-            b = car(cdr(cdr(form)))
-            bc_cexpr(a, ctx, env)
-            jf = _emit!(ctx, :JUMP_FALSE, 0)
-            bc_cexpr(b, ctx, env)
-            je = _emit!(ctx, :JUMP, 0)
-            _patch!(ctx, jf, length(ctx.code))
-            if op == "and"
-                _emit!(ctx, :LOAD_CONST, _addc!(ctx, false))
-            end
-            _patch!(ctx, je, length(ctx.code))
-            return
-        elseif op == "lambda"
-            v = car(cdr(form))
-            body = car(cdr(cdr(form)))
-            sub = _new_bctx(ctx.selfname)
-            _alloc_slot!(sub, v.name)
-            e2 = copy(env)
-            e2[v.name] = 0
-            bc_cexpr(body, sub, e2)
-            _emit!(sub, :RETURN)
-            tm = Runtime.BytecodeFunc("lam", 1, sub.maxlocals, sub.code, sub.consts)
-            ups = collect(values(env))
-            ci = _addc!(ctx, (tm, ups))
-            _emit!(ctx, :MAKE_CLOSURE, ci, length(ups))
-            return
-        elseif op == "freeze"
-            body = car(cdr(form))
-            sub = _new_bctx(ctx.selfname)
-            bc_cexpr(body, sub, env)
-            _emit!(sub, :RETURN)
-            tm = Runtime.BytecodeFunc("frz", 0, sub.maxlocals, sub.code, sub.consts)
-            ups = collect(values(env))
-            ci = _addc!(ctx, (tm, ups))
-            _emit!(ctx, :MAKE_CLOSURE, ci, length(ups))
-            return
-        elseif op == "type"
-            bc_cexpr(car(cdr(form)), ctx, env)
-            return
-        else
-            bc_kl_call(form, ctx, env, false)
-            return
-        end
-    else
-        bc_kl_call(form, ctx, env, false)
-    end
-end
-
-function bc_ctail(form, ctx::_BCtx, env::Dict{String,Int})
-    if !is_cons(form)
-        k, v = bc_catom(form, ctx, env)
-        _emit!(ctx, k == :local ? :LOAD_LOCAL : :LOAD_CONST, v)
-        _emit!(ctx, :RETURN)
-        return
-    end
-    head = car(form)
-    if is_symbol(head) && !haskey(env, head.name)
-        op = head.name
-        if op == "if"
-            test = car(cdr(form))
-            th = car(cdr(cdr(form)))
-            el = cdr(cdr(cdr(form)))
-            bc_cexpr(test, ctx, env)
-            jf = _emit!(ctx, :JUMP_FALSE, 0)
-            bc_ctail(th, ctx, env)
-            ep = length(ctx.code)
-            _patch!(ctx, jf, ep)
-            if is_cons(el)
-                bc_ctail(car(el), ctx, env)
-            else
-                _emit!(ctx, :LOAD_CONST, _addc!(ctx, false))
-                _emit!(ctx, :RETURN)
-            end
-            return
-        elseif op in ("let", "do", "cond", "and", "or", "type", "lambda", "freeze")
-            bc_cexpr(form, ctx, env)
-            _emit!(ctx, :RETURN)
-            return
-        else
-            bc_kl_call(form, ctx, env, true)
-            return
-        end
-    else
-        bc_kl_call(form, ctx, env, true)
-    end
-end
-
-function bc_cdefun(form::Cons)
-    name = car(cdr(form)).name
-    params = to_array(car(cdr(cdr(form))))
-    body = car(cdr(cdr(cdr(form))))
-    ctx = _new_bctx(name)
-    env = Dict{String,Int}()
-    for p in params
-        if is_symbol(p)
-            sl = _alloc_slot!(ctx, p.name)
-            env[p.name] = sl
-        end
-    end
-    ctx.nextslot = length(params)
-    ctx.maxlocals = max(ctx.maxlocals, ctx.nextslot)
-    ARITY[name] = length(params)
-    bc_ctail(body, ctx, env)
-    if isempty(ctx.code) || ctx.code[end].op != 0x07
-        _emit!(ctx, :RETURN)
-    end
-    Runtime.BytecodeFunc(name, length(params), ctx.maxlocals, ctx.code, ctx.consts)
-end
-
-function bc_compile_expr_chunk(form)
-    ctx = _new_bctx()
-    bc_cexpr(form, ctx, Dict{String,Int}())
-    _emit!(ctx, :RETURN)
-    Runtime.BytecodeFunc("expr", 0, ctx.maxlocals, ctx.code, ctx.consts)
-end
-
-function bc_compile_top(form)
-    if is_cons(form) && is_symbol(car(form)) && car(form).name == "defun"
-        return bc_cdefun(form)
-    else
-        return bc_compile_expr_chunk(form)
     end
 end
 

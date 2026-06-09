@@ -8,11 +8,26 @@ using ..Compiler
 
 export F, FA, GLOBALS, ERR, APP, MKFUN, PARTIAL, equal, BIND, MKTREE
 export defprim, eval_kl, compile_and_load!, force, is_bounce, bounce, Bounce, mk_in_stream, mk_out_stream
-export force, bounce, is_bounce, Bounce, BIND, MKTREE, FRAME_STACK, ActivationRecord, push_frame!, pop_frame!, max_frame_depth, reset_max_frame_depth!, ensure_port_prims!  # trampoline + explicit frames (SO fix, precomp/VM coord, depth measure)
+export max_frame_depth, reset_max_frame_depth!, ensure_port_prims!, install_fast_builtins!
 
-const F = Dict{String, Function}()
+const F = Dict{String, Function}()      # public/APP table (string-keyed; ergonomic)
 const FA = Dict{Function, Int}()
 const GLOBALS = Dict{String, Any}()
+
+# Integer-slot dispatch table that compiled code calls through (codegen emits FV[slot];
+# see Compiler.fnslot). Removes the per-call string hash. setfn! is the single registration
+# point that keeps FV and F in sync, so there is no way for them to drift.
+const FV = Function[]
+_undef_fn_slot(args...) = ERR("call to unregistered function slot")
+function setfn!(name::String, fn::Function)
+    s = Compiler.fnslot(name)
+    while length(FV) < s
+        push!(FV, _undef_fn_slot)
+    end
+    @inbounds FV[s] = fn
+    F[name] = fn
+    return fn
+end
 
 # Trampoline support for tail calls (Julia has no TCO).
 # Tail-position calls in compiled code (via kl_call_tail / APP in tail ctx) return a Bounce
@@ -35,12 +50,13 @@ end
 is_bounce(x) = x isa Bounce
 
 @inline function force(x)
-    # Fast path (agent improvement): most returns from prims / value-pos calls / after driving a tail
-    # are already concrete values. Avoid while + is_bounce check overhead on the common case.
+    # Most returns are already concrete values; skip the loop on the common case.
     is_bounce(x) || return x
+    # The bounced fn is reached under a top-level `invokelatest` (every public entry point
+    # establishes one), so we are already in the latest world age and can call it directly.
     while true
         b = x
-        x = Base.invokelatest(b.f, b.args...)
+        x = b.f(b.args...)
         is_bounce(x) || return x
     end
 end
@@ -87,37 +103,11 @@ end
 # Core.eval'd compiler output (from emit_mktree / MKLIST in cexpr) resolve.
 const _MKTREE = MKTREE
 
-# Explicit frame stack (inspired by shen-c LoopFrameStack) for the executor.
-# Activation records hold locals (for lets/params), continuation or pc, and
-# trap-error handler. The main driver loop (force + public boundaries) plus
-# self-while in codegen keeps Julia stack bounded; this vec reifies the KL
-# control state for measurement, VM handoff (precomp snapshot), and future
-# full stepper (avoid deep Julia calls for non-tail cross fn).
-mutable struct ActivationRecord
-    fn::String
-    locals::Dict{String,Any}
-    cont::Any
-    handler::Any
-end
-const FRAME_STACK = ActivationRecord[]
-const _MAX_FRAME_DEPTH = Ref(0)
-function push_frame!(fn::String, locals=Dict{String,Any}(), cont=nothing, handler=nothing)
-    push!(FRAME_STACK, ActivationRecord(fn, locals, cont, handler))
-    d = length(FRAME_STACK)
-    if d > _MAX_FRAME_DEPTH[]; _MAX_FRAME_DEPTH[] = d; end
-    return d
-end
-function pop_frame!()
-    isempty(FRAME_STACK) && return nothing
-    return pop!(FRAME_STACK)
-end
-function max_frame_depth()
-    return _MAX_FRAME_DEPTH[]
-end
-function reset_max_frame_depth!()
-    empty!(FRAME_STACK)
-    _MAX_FRAME_DEPTH[] = 0
-end
+# Diagnostic call-depth API kept only for the boot/test drivers that print it. Nothing
+# increments it any more (the explicit frame stack went away with the bytecode VM), so
+# these are inert stubs.
+max_frame_depth() = 0
+reset_max_frame_depth!() = nothing
 
 # Early-world wrapper for all user-defined and prim fns (world-age mitigation from
 # dedicated subagent). Every entry in F and every key in FA is one of these.
@@ -127,328 +117,14 @@ end
 # concrete values, never a pending Bounce. Internal self-tail bounces (if the while
 # opt is active inside the raw) are driven here at the boundary.
 function _safe_caller(rawfn::Function, klname::String="")
-    nm = isempty(klname) ? string(rawfn) : klname
+    # Wrapper for user/kernel functions. Its only job is to drive the trampoline: the raw
+    # compiled body may return a Bounce for a cross-function tail call, and value-position
+    # callers expect a concrete value, so we force here. No `invokelatest` (we run under a
+    # top-level one — see force) and no per-call frame/Dict allocation (that was diagnostic
+    # only). This is on the hot path for every KL function call.
     return function(args...)
-        # Track on explicit frame stack at public boundary (helps measure max depth for init/prolog/self-rec; VM can own/snapshot).
-        # Use KL name when provided (from defun) for better reified frames / depth measure.
-        push_frame!(nm, Dict{String,Any}())
-        try
-            res = Base.invokelatest(rawfn, args...)
-            return force(res)
-        finally
-            pop_frame!()
-        end
+        force(rawfn(args...))
     end
-end
-
-# ===================================================================
-# Bytecode VM implementation (tight loop, explicit frames for SO safety + self-tail fastpath)
-# Integrates with existing Bounce/force trampoline for cross-boundary tails (bc <-> non-bc).
-# World-age: zero issue -- VM is fixed host code; new KL fns are *data* (BytecodeFunc).
-# Precompile friendly: BytecodeFunc trees are plain data (can be built in precomp script
-# and live in sysimage with no per-boot string/parse/JIT).
-# ===================================================================
-
-# Frame for explicit control stack inside vm_exec (no Julia recursion for KL calls).
-# Kept as concrete as possible for the interpreter loop: BytecodeFunc is a fixed struct,
-# but operand/locals/upvals are Vector{Any} because KL is dynamically typed (heterogeneous
-# values, cons lists, closures, etc.). We mitigate via:
-# - @inbounds + @inline on hot paths
-# - in-place mutation for SELF_TAIL (no new vectors)
-# - small-arity fast paths where practical
-# - pre-sizing where we know narg/nlocals
-# Per Julia performance tips: avoid abstract containers in *very* hot loops when you can;
-# here the dynamic language semantics force Any for user values, but the *VM machinery*
-# (pc, op dispatch, frame switching) is kept concrete (UInt8 op, Int pc, struct fields).
-mutable struct _VMFrame
-    bcf::BytecodeFunc
-    locals::Vector{Any}
-    upvals::Vector{Any}
-    pc::Int
-    vals::Vector{Any}   # operand stack for this activation
-end
-
-# bc_invoke: run a bc closure or func to completion (value or Bounce if tail-out to non-bc)
-@inline function bc_invoke(bcf::BytecodeFunc, args::Vector{Any}, upvals::Vector{Any}=Any[])
-    return vm_exec(bcf, args, upvals)
-end
-@inline function bc_invoke(clos::BCClosure, args::Vector{Any})
-    return vm_exec(clos.template, args, clos.upvals)
-end
-
-# Main VM: drives explicit frames; returns concrete or Bounce (for trampoline handoff)
-# Wire public FRAME_STACK (ActivationRecord) on every bc activation (push on enter, pop on return)
-# so that init/prolog/stlib using bc (or future kernel bc) get bounded Julia stack + measured
-# max KL depth (coord with source self-tail while). Uses bcf.name for KL-level fn label.
-#
-# Perf notes (Julia performance-tips):
-# - The outer per-frame and inner pc loop are marked @inbounds.
-# - Self-tail (0x06) and some tail cases mutate in place to avoid allocs (like a register VM).
-# - Small arities dominate in practice; the carg/newloc copies are the main per-call cost.
-# - Future: a contiguous value stack + frame base pointers (instead of per-frame vals Vector)
-#   would reduce indirection and allow better escape analysis / less GC pressure.
-function vm_exec(bcf::BytecodeFunc, args::Vector{Any}, upvals::Vector{Any}=Any[])::Any
-    push_frame!(bcf.name, Dict{String,Any}())
-    frames = _VMFrame[]
-    nloc = max(bcf.nlocals, length(args))
-    locs = Vector{Any}(undef, nloc)
-    @inbounds for i in 1:length(args)
-        locs[i] = args[i]
-    end
-    # Pre-allocate a modest operand stack per frame. Most KL expressions have small
-    # stack depth (a few temporaries). push!/pop! will grow if needed.
-    vals = Vector{Any}()
-    sizehint!(vals, 8)
-    frame = _VMFrame(bcf, locs, upvals, 0, vals)
-    push!(frames, frame)
-    cur = frame
-
-    @inbounds while !isempty(frames)
-        codev = cur.bcf.code
-        clen = length(codev)
-        while cur.pc < clen
-            ins = codev[cur.pc + 1]
-            cur.pc += 1
-            op = ins.op
-            a = Int(ins.a)
-            b = Int(ins.b)
-
-            if op == 0x00  # LOAD_LOCAL
-                push!(cur.vals, cur.locals[a + 1])
-            elseif op == 0x01  # STORE_LOCAL
-                cur.locals[a + 1] = pop!(cur.vals)
-            elseif op == 0x02  # LOAD_CONST
-                push!(cur.vals, cur.bcf.consts[a + 1])
-            elseif op == 0x03  # LOAD_UPVAL
-                push!(cur.vals, cur.upvals[a + 1])
-            elseif op == 0x07  # RETURN
-                ret = pop!(cur.vals)
-                pop_frame!()
-                pop!(frames)
-                if isempty(frames)
-                    return ret
-                end
-                cur = frames[end]
-                push!(cur.vals, ret)
-                # continue in caller after its CALL instr (pc already advanced by caller)
-            elseif op == 0x08  # JUMP
-                cur.pc = a
-            elseif op == 0x09  # JUMP_FALSE
-                condv = pop!(cur.vals)
-                if condv === false
-                    cur.pc = a
-                end
-            elseif op == 0x0a  # MAKE_CLOSURE
-                # consts[a] holds (tmpl::BytecodeFunc, upslotlist::Vector{Int})
-                entry = cur.bcf.consts[a + 1]
-                tmpl, upslots = entry
-                # Pre-allocate captured upvals vector (usually tiny for closures).
-                captured = Vector{Any}(undef, length(upslots))
-                @inbounds for (j, sl) in enumerate(upslots)
-                    captured[j] = (sl + 1 <= length(cur.locals) ? cur.locals[sl + 1] : nothing)
-                end
-                push!(cur.vals, BCClosure(tmpl, captured))
-            elseif op == 0x0b  # POP
-                if !isempty(cur.vals); pop!(cur.vals); end
-            elseif op == 0x04 || op == 0x05 || op == 0x06  # CALL / TAIL_CALL / SELF_TAIL_CALL
-                narg = b
-                # Small-arity fast path (0-3 args cover the vast majority of KL calls in core + tests).
-                # Avoids Vector{Any} allocation + reverse loop for the common cases. This is a direct
-                # application of "specialize hot paths" and "reduce allocations in the interpreter loop".
-                target = cur.bcf.consts[a + 1]
-                is_self = (op == 0x06)
-                is_tail = (op == 0x05 || is_self)
-
-                if narg == 0
-                    carg0 = ()
-                    carg = carg0
-                elseif narg == 1
-                    v1 = pop!(cur.vals)
-                    carg = (v1,)
-                elseif narg == 2
-                    v2 = pop!(cur.vals); v1 = pop!(cur.vals)
-                    carg = (v1, v2)
-                elseif narg == 3
-                    v3 = pop!(cur.vals); v2 = pop!(cur.vals); v1 = pop!(cur.vals)
-                    carg = (v1, v2, v3)
-                else
-                    carg = Vector{Any}(undef, narg)
-                    @inbounds for i in narg:-1:1
-                        carg[i] = pop!(cur.vals)
-                    end
-                end
-
-                # resolve target if symbol fallback
-                if is_symbol(target)
-                    nm = target.name
-                    if haskey(BC_F, nm)
-                        target = BC_F[nm]
-                    else
-                        target = get(F, nm, target)
-                    end
-                elseif target === :__computed_fn__
-                    # fnval was pushed before args for computed head; pop it now as target
-                    fnval = pop!(cur.vals)  # the head val (may be BCClosure, BytecodeFunc, fn, symbol)
-                    target = fnval
-                end
-
-                if is_self || (target isa BytecodeFunc && target.name == cur.bcf.name && target.arity == narg)
-                    # zero-cost self tail: mutate current frame locals, reset pc.
-                    # This is the key "register VM" style win for self-rec (no alloc, no new frame).
-                    if narg == 0
-                    elseif narg == 1
-                        cur.locals[1] = carg[1]
-                    elseif narg == 2
-                        cur.locals[1] = carg[1]; cur.locals[2] = carg[2]
-                    elseif narg == 3
-                        cur.locals[1] = carg[1]; cur.locals[2] = carg[2]; cur.locals[3] = carg[3]
-                    else
-                        @inbounds for i in 1:narg
-                            cur.locals[i] = carg[i]
-                        end
-                    end
-                    cur.pc = 0
-                    continue
-                end
-
-                if target isa BytecodeFunc
-                    if is_tail
-                        # replace current frame (tail to different bc) — reuse the idea of mutation
-                        nnew = max(target.nlocals, narg)
-                        newloc = Vector{Any}(undef, nnew)
-                        if narg <= 3
-                            @inbounds for i in 1:narg; newloc[i] = carg[i]; end
-                        else
-                            @inbounds for i in 1:narg; newloc[i] = carg[i]; end
-                        end
-                        cur.bcf = target
-                        cur.locals = newloc
-                        cur.upvals = Any[]
-                        cur.pc = 0
-                        empty!(cur.vals)
-                        continue
-                    else
-                        # value call: push new frame
-                        nnew = max(target.nlocals, narg)
-                        newloc = Vector{Any}(undef, nnew)
-                        @inbounds for i in 1:narg; newloc[i] = carg[i]; end
-                        newf = _VMFrame(target, newloc, Any[], 0, Any[])
-                        push!(frames, newf)
-                        push_frame!(target.name, Dict{String,Any}())
-                        cur = newf
-                        continue
-                    end
-                elseif target isa BCClosure
-                    tmpl = target.template
-                    if is_tail
-                        nnew = max(tmpl.nlocals, narg)
-                        newloc = Vector{Any}(undef, nnew)
-                        @inbounds for i in 1:narg; newloc[i] = carg[i]; end
-                        cur.bcf = tmpl
-                        cur.locals = newloc
-                        cur.upvals = target.upvals
-                        cur.pc = 0
-                        empty!(cur.vals)
-                        continue
-                    else
-                        nnew = max(tmpl.nlocals, narg)
-                        newloc = Vector{Any}(undef, nnew)
-                        @inbounds for i in 1:narg; newloc[i] = carg[i]; end
-                        newf = _VMFrame(tmpl, newloc, target.upvals, 0, Any[])
-                        push!(frames, newf)
-                        push_frame!(tmpl.name, Dict{String,Any}())
-                        cur = newf
-                        continue
-                    end
-                else
-                    # non-bc target: Julia fn / symbol / other. Use APP path for semantics (curries, bounces)
-                    # In value pos (CALL): force to concrete. In tail: return the Bounce so upper can tramp
-                    app_res = if narg == 0
-                        APP(target)
-                    elseif narg == 1
-                        APP(target, carg[1])
-                    elseif narg == 2
-                        APP(target, carg[1], carg[2])
-                    elseif narg == 3
-                        APP(target, carg[1], carg[2], carg[3])
-                    else
-                        APP(target, carg...)
-                    end
-                    if is_tail
-                        if is_bounce(app_res) || app_res isa BytecodeFunc || app_res isa BCClosure
-                            pop_frame!()  # ending this vm activation (handoff); paired with entry push
-                            return app_res   # handoff to trampoline; unwind this vm
-                        else
-                            push!(cur.vals, app_res)
-                        end
-                    else
-                        push!(cur.vals, force(app_res))
-                    end
-                end
-            else
-                # unknown / future op -- fallback or error
-                ERR("bad bytecode op $(op) at pc=$(cur.pc-1)")
-            end
-        end
-        # fell off end: implicit return
-        if !isempty(cur.vals)
-            ret = pop!(cur.vals)
-            pop_frame!()
-            pop!(frames)
-            if isempty(frames); return ret; end
-            cur = frames[end]
-            push!(cur.vals, ret)
-        else
-            pop_frame!()
-            pop!(frames)
-            if !isempty(frames)
-                cur = frames[end]
-                push!(cur.vals, NIL)
-            end
-        end
-    end
-    pop_frame!()
-    return NIL
-end
-
-# Small helper for common case (0-ary thunks / expr chunks). Keeps call sites clean.
-@inline vm_exec0(bcf::BytecodeFunc) = vm_exec(bcf, Any[])
-
-# Wrapper creator for bc: produces a plain Julia callable (no late raw, world-age safe)
-# that APP / F can use uniformly. Returns concrete or Bounce for tramp integration.
-# Note: the Any[args...] is a necessary cost to bridge the vararg Function interface
-# into the typed vm_exec. The small-arity paths in APP + vm_exec help callers.
-@inline function make_bc_wrapper(bcf::BytecodeFunc)
-    return function(args...)
-        # Fast path for tiny arg counts (common) to avoid the general Any[] in some call sites.
-        # vm_exec still receives a Vector internally for now.
-        res = if length(args) == 0
-            vm_exec(bcf, Any[])
-        elseif length(args) == 1
-            vm_exec(bcf, Any[args[1]])
-        elseif length(args) == 2
-            vm_exec(bcf, Any[args[1], args[2]])
-        else
-            vm_exec(bcf, Any[args...])
-        end
-        if is_bounce(res)
-            return res
-        end
-        return res
-    end
-end
-
-# Register bc-compiled defun: store template, create wrapper (returns Bounce for tails), but
-# wrap entry in _safe_caller (with KL name) so F[] public calls always concrete (force inside),
-# and FRAME_STACK tracks the activation (for depth/measure). This completes bc path wiring.
-function register_bc_func!(bcf::Runtime.BytecodeFunc)
-    BC_F[bcf.name] = bcf
-    bcw = make_bc_wrapper(bcf)
-    # inner to bcw may yield bounce; _safe will force result for public, and push with KL name
-    wrapped = _safe_caller(bcw, bcf.name)
-    F[bcf.name] = wrapped
-    FA[wrapped] = bcf.arity
-    Compiler.ARITY[bcf.name] = bcf.arity
 end
 
 function ERR(msg)
@@ -472,9 +148,9 @@ end
         extra = collect(args)
         all = copy(have)
         append!(all, extra)
-        # Use invokelatest for the completion call (f may be late user wrapper or raw);
-        # _safe_caller is applied by the MKFUN below (and explicitly in other paths).
-        return Base.invokelatest(f, all...)
+        # Direct call (no invokelatest — we run under a top-level one). The MKFUN wrapper
+        # below forces the result.
+        return f(all...)
     end
     return MKFUN(need, g)
 end
@@ -502,16 +178,16 @@ function BIND(fn, args...)
         raw_thunk = fn
     elseif n == 1
         a1 = args[1]
-        raw_thunk = () -> Base.invokelatest(fn, a1)
+        raw_thunk = () -> fn(a1)
     elseif n == 2
         a1, a2 = args
-        raw_thunk = () -> Base.invokelatest(fn, a1, a2)
+        raw_thunk = () -> fn(a1, a2)
     elseif n == 3
         a1, a2, a3 = args
-        raw_thunk = () -> Base.invokelatest(fn, a1, a2, a3)
+        raw_thunk = () -> fn(a1, a2, a3)
     else
         caps = collect(args)
-        raw_thunk = () -> Base.invokelatest(fn, caps...)
+        raw_thunk = () -> fn(caps...)
     end
     # Ensure _safe_caller used for BIND thunks (world-age + always force result);
     # thaws/APP will go through bounce/force which invokelatest the (wrapped) thunk.
@@ -563,7 +239,7 @@ end
     else
         first = args[1:ar]
         rest = args[ar+1:end]
-        r = force(Base.invokelatest(f, first...))  # force the prefix (rare over-apply)
+        r = force(f(first...))  # force the prefix (rare over-apply)
         return APP(r, rest...)
     end
 end
@@ -602,11 +278,15 @@ function equal(a, b)
 end
 
 function defprim(name::String, arity::Int, fn::Function)
-    wrapped = _safe_caller(fn, name)
-    F[name] = wrapped
-    FA[wrapped] = arity
+    # Primitives are host functions defined in the module's initial world age: they have
+    # NO world-age hazard and never need the `_safe_caller` wrapper (which would add a
+    # per-call Dict allocation, frame push/pop, and two `invokelatest` dispatches — pure
+    # overhead on the hottest path in the system). Store the raw fn directly. Prims that
+    # delegate to APP (and could yield a Bounce, e.g. `thaw`) force their own result.
+    setfn!(name, fn)          # populates both FV (codegen) and F (public/APP)
+    FA[fn] = arity
     Compiler.ARITY[name] = arity
-    # Register for prim direct bypass in codegen (trampoline agent).
+    # Register for prim direct bypass in codegen.
     push!(Compiler.PRIMS, name)
 end
 
@@ -617,31 +297,55 @@ end
 
 const FAILOBJ = intern("shen.fail!")
 
+# Named, @inline-able implementations of the hottest primitives. These are the single
+# source of truth: `defprim` registers them in F (for currying / value-position / APP),
+# and the compiler emits *direct* calls to them (Compiler.INLINE_PRIM) when the prim is
+# applied at exact arity in head position — skipping the F string-Dict lookup, the FA
+# arity check, and (in tail position) the Bounce allocation. Julia can then inline them
+# straight into the generated function body. This is the "peephole optimisation" the
+# Shen porting guide recommends for oft-used low-level functions.
+# Multiple dispatch: a concrete fast method for Real operands (which Julia specializes per
+# concrete type into static, unboxed arithmetic) plus a generic fallback that validates via
+# tonum. KL is dynamically typed, so operands arrive as Any; the runtime dispatch lands on
+# the Real method when they are numbers, ~2-2.5x faster than routing everything through
+# tonum + an abstract-typed operator (see bin/bench_dispatch.jl). Behaviour is identical to
+# the old tonum-only form (Real == what tonum accepts), just type-specialized.
+@inline kl_add(a::Real, b::Real) = a + b
+@inline kl_add(a, b) = tonum(a) + tonum(b)
+@inline kl_sub(a::Real, b::Real) = a - b
+@inline kl_sub(a, b) = tonum(a) - tonum(b)
+@inline kl_mul(a::Real, b::Real) = a * b
+@inline kl_mul(a, b) = tonum(a) * tonum(b)
+@inline kl_div(a::Real, b::Real) = (b == 0 && ERR("division by zero"); a / b)
+@inline kl_div(a, b) = (bn = tonum(b); bn == 0 && ERR("division by zero"); tonum(a) / bn)
+@inline kl_gt(a::Real, b::Real)  = a > b
+@inline kl_gt(a, b)  = tonum(a) > tonum(b)
+@inline kl_lt(a::Real, b::Real)  = a < b
+@inline kl_lt(a, b)  = tonum(a) < tonum(b)
+@inline kl_gte(a::Real, b::Real) = a >= b
+@inline kl_gte(a, b) = tonum(a) >= tonum(b)
+@inline kl_lte(a::Real, b::Real) = a <= b
+@inline kl_lte(a, b) = tonum(a) <= tonum(b)
+@inline kl_eq(a, b)  = equal(a, b)
+@inline kl_cons(a, b) = cons(a, b)
+@inline kl_hd(x) = x isa Cons ? x.h : ERR("hd of non-cons")
+@inline kl_tl(x) = x isa Cons ? x.t : ERR("tl of non-cons")
+
 # arithmetic
-defprim("+", 2, (a, b) -> tonum(a) + tonum(b))
-defprim("-", 2, (a, b) -> tonum(a) - tonum(b))
-defprim("*", 2, (a, b) -> tonum(a) * tonum(b))
-defprim("/", 2, function(a, b)
-    b = tonum(b)
-    b == 0 && ERR("division by zero")
-    return tonum(a) / b
-end)
-defprim(">", 2, (a, b) -> tonum(a) > tonum(b))
-defprim("<", 2, (a, b) -> tonum(a) < tonum(b))
-defprim(">=", 2, (a, b) -> tonum(a) >= tonum(b))
-defprim("<=", 2, (a, b) -> tonum(a) <= tonum(b))
-defprim("=", 2, (a, b) -> equal(a, b))
+defprim("+", 2, kl_add)
+defprim("-", 2, kl_sub)
+defprim("*", 2, kl_mul)
+defprim("/", 2, kl_div)
+defprim(">", 2, kl_gt)
+defprim("<", 2, kl_lt)
+defprim(">=", 2, kl_gte)
+defprim("<=", 2, kl_lte)
+defprim("=", 2, kl_eq)
 
 # lists
-defprim("cons", 2, (a, b) -> cons(a, b))
-defprim("hd", 1, function(x)
-    x isa Cons || ERR("hd of non-cons")
-    return x.h
-end)
-defprim("tl", 1, function(x)
-    x isa Cons || ERR("tl of non-cons")
-    return x.t
-end)
+defprim("cons", 2, kl_cons)
+defprim("hd", 1, kl_hd)
+defprim("tl", 1, kl_tl)
 defprim("cons?", 1, x -> x isa Cons)
 
 # predicates
@@ -753,7 +457,7 @@ defprim("address->", 3, function(v, i, x)
     return v
 end)
 
-defprim("thaw", 1, x -> APP(x))
+defprim("thaw", 1, x -> force(APP(x)))
 
 defprim("type", 2, (x, _ty) -> x)
 
@@ -862,6 +566,99 @@ function MKLIST(arr, tail)
     return acc
 end
 
+# ---------------------------------------------------------------------------
+# "Overwrite" peephole builtins (Shen porting guide §Optimising your Port).
+# The kernel defines append/reverse/length/map in KL as recursive functions; every
+# element costs a full KL call to the recursive driver (through F + the trampoline).
+# These host versions are behaviour-conformant drop-in replacements that walk the Cons
+# spine in a tight loop instead. Bonus: `append` here is iterative, whereas the kernel's
+# `append` is NOT tail-recursive and overflows the stack on long lists.
+# install_fast_builtins!() swaps them into F after boot (so they override the KL defs);
+# the originals are stashed in SLOW_BUILTINS for A/B benchmarking.
+# ---------------------------------------------------------------------------
+const SLOW_BUILTINS = Dict{String, Function}()
+
+# append: () ++ b = b; (h.t) ++ b = h : (t ++ b); improper spine -> simple-error.
+function kl_append(a, b)
+    rev = NIL
+    c = a
+    while c isa Cons
+        rev = cons(c.h, rev); c = c.t
+    end
+    c === NIL || ERR("attempt to append a non-list")
+    acc = b
+    while rev isa Cons
+        acc = cons(rev.h, acc); rev = rev.t
+    end
+    return acc
+end
+
+# reverse: proper-list reversal; improper spine -> simple-error (as shen.reverse-help).
+function kl_reverse(a)
+    acc = NIL
+    c = a
+    while c isa Cons
+        acc = cons(c.h, acc); c = c.t
+    end
+    c === NIL || ERR("attempt to reverse a non-list")
+    return acc
+end
+
+# length: count of a proper list; the KL shen.length-h calls (tl x) on a non-cons tail,
+# so an improper/atom argument errors with "tl of non-cons" — matched here.
+function kl_length(a)
+    n = 0
+    c = a
+    while c isa Cons
+        n += 1; c = c.t
+    end
+    c === NIL || ERR("tl of non-cons")
+    return n
+end
+
+# map: validate the spine first (so an improper list defers to the original kernel map
+# for exact shen.f-error semantics, with no premature side effects), then apply f
+# left-to-right (f is a KL closure -> APP/force) and reverse once, exactly like shen.map-h.
+function kl_map_fast(f, a, origmap)
+    buf = Any[]
+    c = a
+    while c isa Cons
+        push!(buf, c.h); c = c.t
+    end
+    c === NIL || return origmap(f, a)
+    rev = NIL
+    @inbounds for i in 1:length(buf)
+        rev = cons(force(APP(f, buf[i])), rev)
+    end
+    acc = NIL
+    while rev isa Cons
+        acc = cons(rev.h, acc); rev = rev.t
+    end
+    return acc
+end
+
+function _override_builtin!(nm::String, ar::Int, fn::Function)
+    haskey(F, nm) || return  # only replace what the kernel actually defined
+    SLOW_BUILTINS[nm] = F[nm]
+    setfn!(nm, fn)           # updates both FV (codegen path) and F (public/APP)
+    FA[fn] = ar
+end
+
+# Which builtins to override is an empirical, per-function decision (see bin/bench_builtins.jl):
+#   reverse  -> 5.7x faster, identical semantics                       [install]
+#   length   -> ~1.35x faster, identical semantics                     [install]
+#   append   -> ~1.4x SLOWER, but stack-safe (kernel append is non-
+#               tail-recursive and overflows on very long lists)       [install for safety]
+#   map      -> slower AND changes semantics (kernel leaves per-element
+#               results as unforced Bounces); NOT overridden.
+# kl_map_fast/kl_map are kept available for callers that want a forced, host-side map.
+function install_fast_builtins!()
+    _override_builtin!("reverse", 1, kl_reverse)
+    _override_builtin!("length", 1, kl_length)
+    _override_builtin!("append", 2, kl_append)
+    return nothing
+end
+
 # Names visible to eval'd kernel code
 const S = intern
 const KDATA = Compiler.KDATA
@@ -893,32 +690,14 @@ function eval_kl(form)
         return form
     end
     if form isa Cons && is_symbol(form.h) && form.h.name == "defun"
-        # Prefer bytecode path (data driven, no parse/eval/JIT, explicit frames, fast self-tail)
-        try
-            bcf = Compiler.bc_compile_top(form)
-            if bcf isa Runtime.BytecodeFunc
-                register_bc_func!(bcf)
-                return form.t.h
-            end
-            println(stderr, "[bc-debug] defun bc produced non-bc: ", typeof(bcf))
-        catch e
-            println(stderr, "[bc-debug] defun bc err, fallback: ", typeof(e))
-            # fallback to source for unsupported (e.g. trap-error in prototype)
-        end
+        # Source-codegen path: compile to Julia and let the JIT specialize it. This is the
+        # same path the kernel boots through (proven correct) and benchmarks ~6x faster than
+        # the old bytecode VM, which also produced wrong results.
         compile_and_load!(Compiler.compile_top(form), "defun")
         return form.t.h
     end
-    # For expr chunks, try bc too for prototype perf (user code, run_kl_string etc)
-    try
-        bcf = Compiler.bc_compile_expr_chunk(form)
-        if bcf isa Runtime.BytecodeFunc
-            # run as 0-ary thunk via vm (value context)
-            res = vm_exec(bcf, Any[])
-            return is_bounce(res) ? force(res) : res
-        end
-    catch e
-        println(stderr, "[bc-debug] expr bc err: ", typeof(e))
-    end
+    # Expression chunk: compile + eval. invokelatest because this form may reference functions
+    # that were just defined (yacc/eval re-entry) in a newer world age than our caller.
     src = Compiler.compile_expr_chunk(form)
     mod = @__MODULE__
     return Base.invokelatest(Core.eval, mod, Meta.parse(src))
@@ -931,8 +710,8 @@ end
 # disappear from the module's reflected globals unless referenced in the precomp
 # workload or here. Fixes UndefVarError(:force, ..., ShenJulia.Prims) and similar
 # in run-tests.jl micros/smoke/harness loads when using --sysimage.
-let _ = force, _ = bounce, _ = is_bounce, _ = Bounce, _ = Compiler
-    # also ensure APP etc already are, but force is the main one used by driver
+let _ = force, _ = bounce, _ = is_bounce, _ = Bounce, _ = Compiler, _ = FV, _ = setfn!
+    # FV and setfn! are referenced by name in Core.eval'd codegen output, so pin them too.
 end
 
 end # module Prims

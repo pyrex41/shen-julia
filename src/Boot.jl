@@ -237,16 +237,28 @@ function _manual_complete_init_state!()
 end
 
 function run_kl_string(src::String)
+    # Shen-level input uses Shen reader syntax ([...] lists, vectors, etc.) which the raw KL
+    # reader (read_all) does NOT understand — it would mis-read `[1 2 3]`. Once the kernel is
+    # up, parse via the kernel's own reader `read-from-string` (bytes -> shen.<s-exprs> ->
+    # process-sexprs), which yields a proper list of forms, then eval each via `eval`.
+    rfs = get(Prims.F, "read-from-string", nothing)
+    eval_fn = get(Prims.F, "eval", nothing)
+    if rfs !== nothing && eval_fn !== nothing
+        forms = Prims.force(Base.invokelatest(rfs, src))   # a Shen list (Cons chain) of forms
+        last = nothing
+        cur = forms
+        while cur isa Cons
+            last = Prims.force(Base.invokelatest(eval_fn, cur.h))
+            cur = cur.t
+        end
+        return last
+    end
+    # Fallback (pre-boot / kernel not ready): low-level KL reader.
     forms = read_all(src)
     last = nothing
-    eval_fn = get(Prims.F, "eval", nothing)
     for f in forms
-        val = if eval_fn !== nothing && f isa Cons
-            Base.invokelatest(eval_fn, f)
-        else
-            Prims.eval_kl(f)
-        end
-        last = Prims.force(val)  # ensure no Bounce leakage even from expr-chunk eval_kl or direct F["eval"] path; wrappers help but qualify here for early/partial robustness
+        val = (eval_fn !== nothing && f isa Cons) ? Base.invokelatest(eval_fn, f) : Prims.eval_kl(f)
+        last = Prims.force(val)
     end
     return last
 end
@@ -276,10 +288,15 @@ function load_precompiled_kernel!(verbose::Bool=false)
     arity_snap = data[:arity]
     kdata_snap = data[:kdata]
     prims_snap = get(data, :prims, Set{String}())
+    fnslot_snap = get(data, :fnslot, Dict{String,Int}())
 
     empty!(Compiler.ARITY); merge!(Compiler.ARITY, arity_snap)
     empty!(Compiler.KDATA); append!(Compiler.KDATA, kdata_snap)
     empty!(Compiler.PRIMS); union!(Compiler.PRIMS, prims_snap)
+    # Restore the function-slot map so the baked-in FV[slot] indices in the pre-generated
+    # sources resolve to the same slots when setfn! runs during load.
+    empty!(Compiler.FNSLOT); merge!(Compiler.FNSLOT, fnslot_snap)
+    Compiler._NSLOT[] = isempty(fnslot_snap) ? 0 : maximum(values(fnslot_snap))
 
     for nm in KERNEL_FILES
         srcs = get(sources, nm, String[])
@@ -330,6 +347,7 @@ function precompile_kernel_to_file!(outpath::String = PRECOMPILED_KERNEL_PATH)
         arity = copy(Compiler.ARITY),
         kdata = copy(Compiler.KDATA),
         prims = copy(Compiler.PRIMS),
+        fnslot = copy(Compiler.FNSLOT),
         # Integrate post-init snapshot: if frames wiring + self-tail while ensure shen.initialise-environment
         # and full init (incl prolog/stlib deep paths) completes w/o SO, pre-gen can snapshot here
         # (by temp loading srcs + Boot.setup + initialise + capture GLOBALS scalars/*macros* etc).
