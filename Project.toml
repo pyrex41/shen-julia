@@ -4,5 +4,10 @@ version = "0.1.0"
 authors = ["shen-julia contributors"]
 description = "A Julia port of the Shen 41.1 language kernel"
 
+[deps]
+PackageCompiler = "9b87118b-4619-50d2-8e1e-99f35a4d4d9d"
+Serialization = "9e88b42a-f829-5b0c-bbe9-9e923198166b"
+
 [compat]
+PackageCompiler = "2.3.0"
 julia = "1.10"

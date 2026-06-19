@@ -17,7 +17,7 @@ using .Prims
 using .Boot
 
 # Re-export convenience API
-export boot!, eval_kl, run_kl_string, to_str, intern, cons, NIL, equal
+export boot!, eval_kl, run_kl_string, to_str, intern, cons, NIL, equal, repl
 export F, GLOBALS
 
 const F = Prims.F
@@ -25,12 +25,19 @@ const GLOBALS = Prims.GLOBALS
 eval_kl(form) = Prims.eval_kl(form)
 
 function boot!(verbose::Bool=false)
-    Boot.setup_streams!()
-    Boot.load_kernel!(verbose)
-    Boot.initialise!()
+    # Run boot on the big reserved stack: with no trampoline, deep kernel recursion
+    # (init / prolog CPS / stlib / the typechecker) consumes real Julia stack frames.
+    Prims.with_shen_stack() do
+        Boot.setup_streams!()
+        Boot.load_kernel!(verbose)
+        Boot.initialise!()
+        # Swap in fast host implementations of hot list builtins, overriding the KL defs.
+        Prims.install_fast_builtins!()
+    end
 end
 
-run_kl_string(src) = Boot.run_kl_string(src)
+# User/REPL evaluation can recurse arbitrarily deep too — keep it on the big stack.
+run_kl_string(src) = Prims.with_shen_stack(() -> Boot.run_kl_string(src))
 
 function repl()
     boot!(false)

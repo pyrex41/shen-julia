@@ -27,12 +27,8 @@ end
 const _symtab = Dict{String, ShenSymbol}()
 
 function intern(name::String)::ShenSymbol
-    s = get(_symtab, name, nothing)
-    if s === nothing
-        s = ShenSymbol(name)
-        _symtab[name] = s
-    end
-    return s
+    # Faster intern with get! (single lookup, closure only on miss). Common symbols benefit.
+    get!(() -> ShenSymbol(name), _symtab, name)
 end
 
 function intern(name::ShenSymbol)::ShenSymbol
@@ -112,12 +108,42 @@ is_stream(x) = x isa OutStream || x isa InStream
 # ---------------------------------------------------------------------------
 
 function from_vec(arr::AbstractVector, start::Int=1)
+    n = length(arr) - start + 1
+    # Pre-allocate by building the tail first (we already cons in reverse order).
+    # For large lists this avoids many small allocations in the Cons chain.
     acc = NIL
-    for i in length(arr):-1:start
+    @inbounds for i in (length(arr)):-1:start
         acc = cons(arr[i], acc)
     end
     return acc
 end
+
+# Overload for known-length cases coming from iterators/collect (helps inference
+# and lets callers pre-size the source array).
+function from_vec(arr::Vector{Any})
+    acc = NIL
+    @inbounds for i in length(arr):-1:1
+        acc = cons(arr[i], acc)
+    end
+    return acc
+end
+
+# Make Cons and NIL proper Julia iterators, so Base.Iterators combinators work on Shen
+# lists when convenient on the host side.
+function Base.iterate(::NilType, state=nothing)
+    nothing
+end
+
+function Base.iterate(c::Cons, state=c)
+    if state === NIL || !is_cons(state)
+        nothing
+    else
+        (state.h, state.t)
+    end
+end
+
+Base.IteratorSize(::Type{Union{Cons, NilType}}) = Base.SizeUnknown()
+Base.eltype(::Type{Union{Cons, NilType}}) = Any
 
 # ---------------------------------------------------------------------------
 # KL reader
