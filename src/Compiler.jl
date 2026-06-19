@@ -1,14 +1,28 @@
 # Compiler: translate KLambda forms to Julia source for eval().
 #
 # Statement-based codegen: ctail emits statements ending in return, so control
-# flow maps to Julia if/elseif. Tail calls emit return (no native TCO in Julia;
-# deep recursion workloads may need backend loop transforms later).
+# flow maps to Julia if/elseif.
+#
+# Calling convention (the core design decision of this port): each KL defun
+# compiles to a NAMED top-level Julia method (`function K_foo(a1, a2) ... end`)
+# and statically-known calls are emitted as plain direct calls (`K_foo(x, y)`).
+# This rides Julia's own machinery instead of re-implementing it:
+#   - dispatch:      Julia static dispatch + inlining (~0-2ns/call, zero alloc)
+#                    instead of a Vector{Function} slot table (~16ns + no inlining)
+#   - redefinition:  Julia method replacement + automatic invalidation/recompile
+#                    of callers, instead of mutating a function table
+#   - tail calls:    plain calls on a Task with a multi-GB reserved stack
+#                    (see Prims.with_shen_stack), instead of a Bounce trampoline
+#                    (~35ns + 2 allocs per tail call, and it nested force loops)
+# Self-tail recursion still compiles to `while true ... continue` (a real loop
+# beats any calling convention). Only dynamic calls (computed heads, unknown
+# names, partial application) go through APP — a genuine slow path now.
 
 module Compiler
 
 using ..Runtime  # bare to allow Runtime.XXX in bc dups + names
 
-export ARITY, KDATA, prescan, compile_top, compile_expr_chunk, cexpr, ctail
+export ARITY, KDATA, prescan, compile_top, compile_expr_chunk, cexpr, ctail, fnident, cdefun_parts
 
 const ARITY = Dict{String, Int}()
 const KDATA = Any[]
@@ -104,75 +118,32 @@ function catom(form, env::Dict{String,String})
     end
 end
 
-# Function dispatch slots. Calls to known functions go through an integer-indexed
-# Vector{Function} (Prims.FV) instead of the string-keyed Dict F: the decomposition in
-# bin/bench_callpath.jl showed the String-Dict hashing was ~37% of per-call overhead, and
-# an integer slot removes it entirely (the rest — dynamic dispatch through an abstract
-# Function — is the irreducible dynamic-language tax). Each function name gets one stable
-# slot; Prims.setfn! stores the fn at that slot (and still in F for APP / the public API).
-const FNSLOT = Dict{String, Int}()
-const _NSLOT = Ref(0)
-function fnslot(name::String)::Int
-    get!(FNSLOT, name) do
-        _NSLOT[] += 1
-        _NSLOT[]
-    end
-end
-
-function ftab_ref(name::String)
-    return "FV[$(fnslot(name))]"
-end
-
-function kl_call(form::Cons, env::Dict{String,String})
-    head = car(form)
-    args = to_array(cdr(form))
-    cargs = [cexpr(a, env) for a in args]
-    argstr = join(cargs, ", ")
-
-    if is_symbol(head) && !haskey(env, head.name)
-        name = head.name
-        ar = get(ARITY, name, nothing)
-        if ar !== nothing
-            if length(args) == ar
-                inl = get(INLINE_PRIM, name, nothing)
-                inl !== nothing && return "$inl($(argstr))"
-                return "$(ftab_ref(name))($(argstr))"
-            elseif length(args) < ar
-                pack = isempty(args) ? "Any[]" : "[$(argstr)]"
-                return "PARTIAL($(ftab_ref(name)), $ar, $pack)"
+# Mangle a KL function name to a valid Julia identifier, injectively and
+# deterministically (no table needed — the same name always mangles the same way,
+# so pre-generated artifact sources and fresh codegen agree by construction).
+# Letters/digits pass through, '_' doubles, anything else becomes _<hex>_.
+const FNAME = Dict{String, String}()   # memo only
+function fnident(name::String)::String
+    get!(FNAME, name) do
+        io = IOBuffer()
+        print(io, "K_")
+        for c in name
+            if c == '_'
+                print(io, "__")
+            elseif isletter(c) || isdigit(c)
+                print(io, c)
             else
-                first = cargs[1:ar]
-                rest = cargs[ar+1:end]
-                return "force(APP($(ftab_ref(name))($(join(first, ", "))), $(join(rest, ", "))))"
+                print(io, '_', string(UInt32(c), base=16), '_')
             end
-        else
-            # Dynamic function name (arity unknown at compile time): goes through APP, which
-            # returns a Bounce. This is VALUE position (cexpr), so force it — otherwise an
-            # unforced Bounce leaks into the surrounding expression (e.g. consed into a list
-            # by a higher-order fn, then later "applied" -> "attempt to apply a non-function").
-            if isempty(args)
-                return "force(APP($(symlit(name))))"
-            end
-            return "force(APP($(symlit(name)), $(argstr)))"
         end
-    else
-        # Computed head (e.g. a variable holding a function, as in shen.map-h's (V f x)).
-        # Value position -> force the APP result for the same reason as above.
-        hv = cexpr(head, env)
-        if isempty(args)
-            return "force(APP($hv))"
-        end
-        return "force(APP($hv, $(argstr)))"
+        String(take!(io))
     end
 end
 
-# Tail-call emission for bounce + self rebind+continue support (harden for all defuns).
-# For self-tail in tail ctx of cdefun: emit rebind assigns + "continue" (no "return", to loop in while).
-# For cross-fn tail: emit "bounce(Fname, args)" so raw returns Bounce (driven by wrapper force, no eager stack growth).
-# This + while in cdefun ensures self-rec (common in core/prolog/stlib length, callrec, retract etc) uses Julia loop not stack.
-# Threaded only to ctail* (tail pos); cexpr uses kl_call (eager for value pos known fns).
-#
-# See also TailRec.jl for a general @tailrec macro approach in Julia.
+# Call emission. Value and tail position are identical now (direct calls return
+# concrete values; there is no trampoline) EXCEPT self-tail calls, which rebind the
+# params and `continue` the enclosing while loop — pass selfname/self_lnames from
+# ctail for that. kl_call (value position) is the same emitter without self info.
 function kl_call_tail(form::Cons, env::Dict{String,String}, selfname::Union{String,Nothing}=nothing, self_lnames::Vector{String}=String[])
     head = car(form)
     args = to_array(cdr(form))
@@ -203,28 +174,28 @@ function kl_call_tail(form::Cons, env::Dict{String,String}, selfname::Union{Stri
                     end
                     return join(lines, "; ") * "; continue"
                 end
-                # Prims don't recurse — emit a direct inline call instead of a Bounce (which
-                # would allocate + force). ctail wraps this in `return`.
                 inl = get(INLINE_PRIM, name, nothing)
                 inl !== nothing && return "$inl($(argstr))"
-                return "bounce($(ftab_ref(name)), $(argstr))"
+                # Direct static call to the named method — Julia resolves, specializes,
+                # and can inline it. This is the hot path for all kernel-to-kernel calls.
+                return "$(fnident(name))($(argstr))"
             elseif length(args) < ar
                 pack = isempty(args) ? "Any[]" : "[$(argstr)]"
-                return "PARTIAL($(ftab_ref(name)), $ar, $pack)"
+                return "PARTIAL($(fnident(name)), $ar, $pack)"
             else
                 first = cargs[1:ar]
                 rest = cargs[ar+1:end]
-                tmp = gen("r")
-                firstcall = "force(bounce($(ftab_ref(name)), $(join(first, ", "))))"
-                return "(let $tmp = $firstcall; APP($tmp, $(join(rest, ", "))) end)"
+                return "APP($(fnident(name))($(join(first, ", "))), $(join(rest, ", ")))"
             end
         else
+            # Dynamic function name (arity unknown at compile time): resolve + call via APP.
             if isempty(args)
                 return "APP($(symlit(name)))"
             end
             return "APP($(symlit(name)), $(argstr))"
         end
     else
+        # Computed head (e.g. a variable holding a function, as in shen.map-h's (V f x)).
         hv = cexpr(head, env)
         if isempty(args)
             return "APP($hv)"
@@ -232,6 +203,8 @@ function kl_call_tail(form::Cons, env::Dict{String,String}, selfname::Union{Stri
         return "APP($hv, $(argstr))"
     end
 end
+
+kl_call(form::Cons, env::Dict{String,String}) = kl_call_tail(form, env, nothing, String[])
 
 function cons_chain(form::Cons)
     elems = Any[]
@@ -380,9 +353,9 @@ function cexpr(form, env::Dict{String,String})
     if is_symbol(head) && !haskey(env, head.name)
         op = head.name
         if op in ("if", "cond", "let", "do", "trap-error", "and", "or")
-            # Force the IIFE result: ctail inside may "return bounce(..)" for calls (from kl_call_tail in value-ctx controls);
-            # force drives to concrete so if/let etc in expr pos yield values not Bounce (prevents TypeError if-Bool-Bounce etc).
-            return "force((()->($(ctail(form, env))))())"
+            # Statement forms in value position: IIFE. All calls return concrete
+            # values (no trampoline), so the result needs no driving.
+            return "((()->($(ctail(form, env))))())"
         elseif op == "lambda"
             v = car(cdr(form))
             body = car(cdr(cdr(form)))
@@ -564,7 +537,16 @@ function ctail(form, env::Dict{String,String}, selfname::Union{String,Nothing}=n
     end
 end
 
-function cdefun(form::Cons)
+# Compile a defun into its constituent pieces:
+#   name        the KL name (for setfn!)
+#   arity       parameter count
+#   ident       the mangled Julia identifier (K_...)
+#   method_src  the bare `function K_...(...) ... end` definition
+# This is the single source of truth for defun codegen. `cdefun` assembles the
+# usual begin/method/setfn! block from it (the Core.eval boot path); the
+# ahead-of-time generator (bin/gen_kernel.jl) keeps the method at top level (so
+# precompilation bakes it) and emits the setfn! registration separately.
+function cdefun_parts(form::Cons)
     name = car(cdr(form)).name
     params = to_array(car(cdr(cdr(form))))
     body = car(cdr(cdr(cdr(form))))
@@ -576,34 +558,27 @@ function cdefun(form::Cons)
         push!(lnames, ln)
     end
     ARITY[name] = length(params)
-    rawname = "rawf" * gen("impl")
+    ident = fnident(name)
     paramstr = join(lnames, ", ")
-    # Self-tail while + rebind + continue for *all* defuns (source path, pre-gen .jls replay, bc already has).
-    # Ensures self-rec (e.g. in init/prolog/stlib/core recursive fns) executes as bounded Julia loop inside one raw activation
-    # (no additional Julia stack per rec step; trampoline only for mutual/cross). Combined with explicit FRAME_STACK wiring
-    # and early env seeding, enables clean full initialise! without SO or partial state ("printF undefined", missing *macros*).
-    #
-    # This is a custom, zero-overhead implementation of tail-recursion-to-loop (TRO), specialized for our KL compiler.
-    # We detect self-tails using threaded `selfname`/`self_lnames` (from the surrounding defun) and emit direct
-    # "var = arg; ...; continue" (plus _wrap_for_control to keep it valid inside if/let/etc.).
-    # Related work / alternatives in the Julia ecosystem: TailRec.jl (https://github.com/TakekazuKATO/TailRec.jl)
-    # provides a @tailrec macro for similar rewriting; Iterators + Transducers (for list pipelines) complement
-    # this by reducing the need for recursion on data structures. We roll our own here for tight integration with
-    # the Bounce trampoline, _safe_caller world-age wrappers, explicit frames, bc VM, and precompilation .jls path
-    # (which snapshots the already-expanded while-loop sources).
+    # Each defun becomes a named global method. Self-tail recursion compiles to the
+    # while/rebind/continue loop (see kl_call_tail); cross-function calls are plain
+    # Julia calls on the big reserved stack. Redefinition re-evals the method and
+    # Julia's invalidation machinery recompiles callers automatically.
     body_src = ctail(body, env, name, lnames)
-    src = sanitize_julia("""begin
-local $rawname = function($paramstr)
+    method_src = sanitize_julia("""function $ident($paramstr)
     while true
         $body_src
     end
-end
-let w = _safe_caller($rawname, $(qstr(name)))
-    setfn!($(qstr(name)), w)
-    FA[w] = $(length(params))
-end
 end""")
-    return src
+    return (name, length(params), ident, method_src)
+end
+
+function cdefun(form::Cons)
+    name, arity, ident, method_src = cdefun_parts(form)
+    return sanitize_julia("""begin
+$method_src
+setfn!($(qstr(name)), $ident, $arity)
+end""")
 end
 
 function prescan(forms)

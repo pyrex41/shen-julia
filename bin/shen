@@ -1,0 +1,16 @@
+#!/bin/sh
+# Shen/Julia launcher wrapper: a single executable entry point (for bifrost /
+# ratatoskr / users) that invokes the Julia CLI with this project activated.
+#
+# Set SHEN_JULIA_SYSIMAGE=/path/to/ShenJulia.sys to boot from a prebuilt
+# sysimage (much faster startup). Build one with: julia --project=. bin/build_sysimage.jl
+HERE="$(cd "$(dirname "$0")/.." && pwd)"
+SYS=""
+if [ -n "$SHEN_JULIA_SYSIMAGE" ] && [ -f "$SHEN_JULIA_SYSIMAGE" ]; then
+  SYS="--sysimage=$SHEN_JULIA_SYSIMAGE"
+elif [ -f "$HERE/ShenJulia.sys" ] && [ -z "$SHEN_JULIA_NO_SYSIMAGE" ]; then
+  # Default to the prebuilt sysimage when present (fast boot: ~0.5-1.5s vs ~40s).
+  # Set SHEN_JULIA_NO_SYSIMAGE=1 to force the plain (slow-boot) path.
+  SYS="--sysimage=$HERE/ShenJulia.sys"
+fi
+exec julia --project="$HERE" $SYS "$HERE/bin/shen.jl" "$@"

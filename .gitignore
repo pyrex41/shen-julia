@@ -1,0 +1,14 @@
+# Prebuilt sysimage — large (~290 MB) and machine-specific; rebuild with
+# `julia --project=. bin/build_sysimage.jl`.
+ShenJulia.sys
+
+# Per-boot fast-load cache from the OLD Core.eval loader; superseded by the baked
+# kernel (src/kernel_generated.jl). Rebuildable; not needed.
+precompiled_kernel.jls
+
+# Local agent / editor state.
+.claude/
+
+# Julia coverage / allocation profiling output.
+*.cov
+*.jl.*.mem

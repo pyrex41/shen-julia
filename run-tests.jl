@@ -40,10 +40,11 @@ println("Kernel initialised. Version: ", Base.invokelatest(F["version"]))
 # Register a function under `name` through the proper API so the integer-slot
 # dispatch table (Prims.FV) stays in sync with the string-keyed table (Prims.F).
 function regfn!(name::String, arity::Int, fn::Function)
-    if isdefined(Prims, :setfn!)
-        getfield(Prims, :setfn!)(name, Prims.MKFUN(arity, fn))
-    else
-        Prims.defprim(name, arity, fn)
+    getfield(Prims, :setfn!)(name, fn, arity)
+    # Also (re)define the mangled named method so compiled kernel code that calls this
+    # function by direct K_<name> call (not the dynamic F table) sees the stub too.
+    if isdefined(Prims, :define_named!)
+        Base.invokelatest(getfield(Prims, :define_named!), name, arity, fn)
     end
 end
 
@@ -122,6 +123,9 @@ const TESTS = [
 println("\n=== Program tests ===")
 const passed = Ref(0)
 const failed = Ref(0)
+# Run on the big reserved stack: with the trampoline removed, deep kernel recursion
+# (Prolog CPS, the typechecker) uses real Julia frames and would overflow the default stack.
+Prims.with_shen_stack() do
 cd("tests") do
     for (name, files, cases) in TESTS
         for f in files
@@ -152,6 +156,7 @@ cd("tests") do
         end
     end
 end
+end  # with_shen_stack
 println("\n==> passed=$(passed[]) failed=$(failed[])")
 
 # --- official harness (attempted LAST, fully isolated) ----------------------
@@ -160,11 +165,13 @@ let tests_dir = isfile(joinpath("tests", "harness.shen")) ? "tests" : nothing
     if tests_dir !== nothing
         println("\n=== Official harness (informational, may fail) ===")
         try
+            Prims.with_shen_stack() do
             cd(tests_dir) do
                 fc(Base.invokelatest(F["load"], "harness.shen"))
                 println("  harness: ok")
                 fc(Base.invokelatest(F["load"], "kerneltests.shen"))
                 println("  kerneltests: passed=$(get(G, "*passed*", "?")) failed=$(get(G, "*failed*", "?"))")
+            end
             end
         catch e
             println("  harness not run: ", e isa Runtime.ShenExcn ? e.msg : typeof(e))

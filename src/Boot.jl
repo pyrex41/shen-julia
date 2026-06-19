@@ -29,8 +29,8 @@ function find_kldir()
     end
 
     candidates = [
-        "../cl-source/ShenOSKernel-41.1/klambda",
-        "../ShenOSKernel-41.1/klambda",
+        "../cl-source/ShenOSKernel-41.2/klambda",
+        "../ShenOSKernel-41.2/klambda",
         joinpath(@__DIR__, "..", "klambda"),
     ]
     for c in candidates
@@ -73,6 +73,13 @@ function setup_streams!()
 end
 
 function load_kernel!(verbose::Bool=false)
+    # Fastest path: the kernel was baked into the module image by bin/gen_kernel.jl,
+    # so the ~1138 methods are already compiled — we only restore ARITY/KDATA and run
+    # the cheap setfn! registrations. No per-boot Core.eval / JIT of kernel source.
+    if isdefined(Prims, :HAS_BAKED_KERNEL) && getfield(Prims, :HAS_BAKED_KERNEL)
+        load_kernel_baked!(verbose)
+        return
+    end
     if should_use_precompiled_kernel()
         load_precompiled_kernel!(verbose)
         return
@@ -207,7 +214,7 @@ function _manual_complete_init_state!()
     G["shen.*infs*"] = 0
     G["*hush*"] = false
     G["shen.*optimise*"] = false
-    G["*version*"] = "41.1"
+    G["*version*"] = "41.2"
     G["shen.*names*"] = NIL
     G["shen.*step*"] = false
     G["shen.*it*"] = ""
@@ -263,6 +270,26 @@ function run_kl_string(src::String)
     return last
 end
 
+# --- Baked-kernel fast boot (bin/gen_kernel.jl) ---
+
+const KERNEL_ARITY_PATH = joinpath(dirname(@__DIR__), "kernel_arity.jls")
+const KERNEL_KDATA_PATH = joinpath(dirname(@__DIR__), "kernel_kdata.jls")
+
+function load_kernel_baked!(verbose::Bool=false)
+    # Restore the literal table the baked methods index (KDATA) and the defun arity
+    # table the post-boot eval/define codegen needs (ARITY). Then register the
+    # already-compiled K_ methods into F + run the kernel's top-level forms.
+    if isfile(KERNEL_KDATA_PATH)
+        kd = Serialization.deserialize(KERNEL_KDATA_PATH)
+        empty!(Compiler.KDATA); append!(Compiler.KDATA, kd)
+    end
+    if isfile(KERNEL_ARITY_PATH)
+        merge!(Compiler.ARITY, Serialization.deserialize(KERNEL_ARITY_PATH))
+    end
+    Base.invokelatest(getfield(Prims, :_register_baked_kernel!))
+    verbose && println(stderr, "  loaded(baked) $(length(Prims.F)) functions")
+end
+
 # --- Fast precompile / sysimage support ---
 
 const PRECOMPILED_KERNEL_PATH = joinpath(dirname(@__DIR__), "precompiled_kernel.jls")
@@ -288,15 +315,12 @@ function load_precompiled_kernel!(verbose::Bool=false)
     arity_snap = data[:arity]
     kdata_snap = data[:kdata]
     prims_snap = get(data, :prims, Set{String}())
-    fnslot_snap = get(data, :fnslot, Dict{String,Int}())
 
     empty!(Compiler.ARITY); merge!(Compiler.ARITY, arity_snap)
     empty!(Compiler.KDATA); append!(Compiler.KDATA, kdata_snap)
     empty!(Compiler.PRIMS); union!(Compiler.PRIMS, prims_snap)
-    # Restore the function-slot map so the baked-in FV[slot] indices in the pre-generated
-    # sources resolve to the same slots when setfn! runs during load.
-    empty!(Compiler.FNSLOT); merge!(Compiler.FNSLOT, fnslot_snap)
-    Compiler._NSLOT[] = isempty(fnslot_snap) ? 0 : maximum(values(fnslot_snap))
+    # The pre-generated sources call kernel functions by their mangled name (K_<name>),
+    # which the cdefun replay defines as methods — no slot map to restore.
 
     for nm in KERNEL_FILES
         srcs = get(sources, nm, String[])
@@ -347,7 +371,6 @@ function precompile_kernel_to_file!(outpath::String = PRECOMPILED_KERNEL_PATH)
         arity = copy(Compiler.ARITY),
         kdata = copy(Compiler.KDATA),
         prims = copy(Compiler.PRIMS),
-        fnslot = copy(Compiler.FNSLOT),
         # Integrate post-init snapshot: if frames wiring + self-tail while ensure shen.initialise-environment
         # and full init (incl prolog/stlib deep paths) completes w/o SO, pre-gen can snapshot here
         # (by temp loading srcs + Boot.setup + initialise + capture GLOBALS scalars/*macros* etc).

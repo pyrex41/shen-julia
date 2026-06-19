@@ -30,11 +30,15 @@ using PackageCompiler
 proj = dirname(@__DIR__)
 sysout = joinpath(proj, "ShenJulia.sys")
 
-# Generate the fast-load form for klambda (pre-gen Julia source + bytecode arrays).
-# This runs the expensive Compiler work (once) as part of the build.
-println("Pre-generating fast kernel load form (codegen of 21 KL files + state snapshot; one-time per build)...")
+# The kernel is now baked into the module by bin/gen_kernel.jl (src/kernel_generated.jl),
+# so there is NO per-boot codegen to pre-generate here. The job of this build is purely
+# to native-compile (trace) the baked kernel methods + eval/reader/printer/launcher path
+# into the sysimage, via the precompile_execution_file below.
+using ShenJulia
 using ShenJulia.Boot
-Boot.precompile_kernel_to_file!()
+if !(isdefined(ShenJulia.Prims, :HAS_BAKED_KERNEL) && ShenJulia.Prims.HAS_BAKED_KERNEL)
+    error("baked kernel missing — run `julia --project=. bin/gen_kernel.jl` first")
+end
 
 # Precompile execution: boot (now via fast path) + extensive list/prolog/stlib/metaprog loads
 # + direct calls + run_kl to cover as much post-kernel as possible for the sysimage trace.
@@ -69,6 +73,25 @@ open(precomp_script, "w") do io
         try; println("  square 9=", Prims.force(Base.invokelatest(F["sysimg-square"], 9))); catch; end
         println("sysimage precomp: list/prolog/stlib exercises done")
     end
+
+    # Exercise the standard-launcher / eval / print / script path that the bin/shen
+    # CLI drives. This is the bifrost-critical path: without tracing it, a fresh
+    # --sysimage process pays ~40s of first-call JIT for the reader + eval + printer +
+    # launcher on the very first `eval`/`script` invocation. Run via with_shen_stack so
+    # the Task-stack machinery is traced too.
+    function _exercise_launcher(args)
+        argv = NIL
+        for a in Iterators.reverse(args); argv = cons(a, argv); end
+        try
+            Prims.with_shen_stack() do
+                Base.invokelatest(F["shen.x.launcher.main"], argv)
+            end
+        catch e; end
+    end
+    _exercise_launcher(["shen", "eval", "-e", "(+ 40 2)"])
+    _exercise_launcher(["shen", "eval", "-e", "(cons 1 (cons 2 ()))"])
+    _exercise_launcher(["shen", "--version"])
+    println("sysimage precomp: launcher/eval/print path exercised")
     """)
 end
 

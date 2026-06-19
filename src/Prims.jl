@@ -6,60 +6,73 @@ using ..Runtime
 import ..Runtime: make_absvector, NIL, Cons, is_cons, is_symbol, intern
 using ..Compiler
 
-export F, FA, GLOBALS, ERR, APP, MKFUN, PARTIAL, equal, BIND, MKTREE
-export defprim, eval_kl, compile_and_load!, force, is_bounce, bounce, Bounce, mk_in_stream, mk_out_stream
+export F, FA, GLOBALS, ERR, APP, MKFUN, PARTIAL, equal, BIND, MKTREE, ShenFn
+export defprim, eval_kl, compile_and_load!, force, mk_in_stream, mk_out_stream
 export max_frame_depth, reset_max_frame_depth!, ensure_port_prims!, install_fast_builtins!
+export with_shen_stack
 
-const F = Dict{String, Function}()      # public/APP table (string-keyed; ergonomic)
-const FA = Dict{Function, Int}()
+const F = Dict{String, Function}()      # public/dynamic table (string-keyed)
+const FA = Dict{Function, Int}()        # legacy, unused on any path; kept for old scripts
 const GLOBALS = Dict{String, Any}()
 
-# Integer-slot dispatch table that compiled code calls through (codegen emits FV[slot];
-# see Compiler.fnslot). Removes the per-call string hash. setfn! is the single registration
-# point that keeps FV and F in sync, so there is no way for them to drift.
-const FV = Function[]
-_undef_fn_slot(args...) = ERR("call to unregistered function slot")
-function setfn!(name::String, fn::Function)
-    s = Compiler.fnslot(name)
-    while length(FV) < s
-        push!(FV, _undef_fn_slot)
-    end
-    @inbounds FV[s] = fn
-    F[name] = fn
+# A Shen function value: a callable that knows its own arity, so the dynamic
+# path (APP) never needs a side-table lookup, and creating one (lambda, freeze,
+# partial) is a single cheap immutable-struct allocation — no Dict write, no leak.
+# Subtypes Function so existing `isa Function` checks and Dict{String,Function} hold.
+struct ShenFn <: Function
+    fn::Function
+    arity::Int
+end
+@inline (s::ShenFn)(args...) = s.fn(args...)
+Base.show(io::IO, s::ShenFn) = print(io, "#<function/", s.arity, ">")
+
+# Registration point for named compiled functions (codegen emits
+# `setfn!("name", K_name, arity)` after each defun). The named method itself IS
+# the dispatch mechanism — this just maintains the string-keyed table for
+# dynamic lookup (APP on a symbol, drivers, REPL) and the codegen arity table.
+function setfn!(name::String, fn::Function, arity::Int)
+    F[name] = fn isa ShenFn ? fn : ShenFn(fn, arity)
+    Compiler.ARITY[name] = arity
     return fn
 end
+setfn!(name::String, fn::ShenFn) = setfn!(name, fn, fn.arity)
 
-# Trampoline support for tail calls (Julia has no TCO).
-# Tail-position calls in compiled code (via kl_call_tail / APP in tail ctx) return a Bounce
-# instead of invoking directly. force() drives the loop at the "boundary" (top-level eval,
-# APP entry for value calls, thaw, run_kl_string, etc.). This keeps Julia stack shallow
-# for deep/mutual recursion in the kernel (Prolog CPS, Y, numeric self-rec, list fns, etc.).
-mutable struct Bounce
-    f::Function
-    args::Vector{Any}
+# There is no trampoline: compiled calls are plain Julia calls. force() remains as
+# an identity for drivers/scripts written against the old API.
+@inline force(x) = x
+
+# Deep recursion support: Julia has no TCO, so cross-function tail recursion
+# (Prolog CPS, the typechecker, mutual recursion) consumes Julia stack. Instead of
+# a trampoline (which costs an allocation + dynamic dispatch on EVERY call), run the
+# Shen world on a Task with a larger reserved stack. The OS commits pages only as the
+# stack actually grows, but deep recursion DOES commit them — so the size is also the
+# ceiling that turns a runaway (e.g. a non-terminating recursion) into a prompt
+# StackOverflowError instead of an OOM. 512 MiB ≈ a few hundred-thousand frames, which
+# covers legitimate Prolog/typechecker depth. Override with $SHEN_STACK_MB.
+function _shen_stack_bytes()
+    mb = tryparse(Int, get(ENV, "SHEN_STACK_MB", ""))
+    (mb === nothing || mb <= 0) ? 512 : mb
 end
 
-# Simple bounce constructor (the trampoline agent experimented with reuse for alloc reduction;
-# for baseline we keep it simple and correct; reuse can be re-added safely later).
-# Small-arity specializations reduce the Any[] allocation on the common tail-call paths.
-@inline bounce(f) = Bounce(f, Any[])
-@inline bounce(f, a1) = Bounce(f, Any[a1])
-@inline bounce(f, a1, a2) = Bounce(f, Any[a1, a2])
-@inline bounce(f, a1, a2, a3) = Bounce(f, Any[a1, a2, a3])
-@inline bounce(f, args...) = Bounce(f, Any[args...])
-is_bounce(x) = x isa Bounce
-
-@inline function force(x)
-    # Most returns are already concrete values; skip the loop on the common case.
-    is_bounce(x) || return x
-    # The bounced fn is reached under a top-level `invokelatest` (every public entry point
-    # establishes one), so we are already in the latest world age and can call it directly.
-    # (World-age recovery for runtime-eval'd closures lives in _safe_caller, the boundary
-    # where the raw — possibly too-new — impl is actually invoked.)
-    while true
-        b = x
-        x = b.f(b.args...)
-        is_bounce(x) || return x
+# Re-entrant: if we are ALREADY running on a shen-stack task, just call f directly —
+# never stack a second reservation. This is what makes nested entry points (boot! and
+# the driver/REPL each wrapping their work) cost only ONE reserved stack at a time.
+function with_shen_stack(f)
+    get(task_local_storage(), :shen_big_stack, false) && return f()
+    t = Task(_shen_stack_bytes() * (1 << 20)) do
+        task_local_storage(:shen_big_stack, true)
+        f()
+    end
+    schedule(t)
+    try
+        return fetch(t)
+    catch e
+        # Unwrap so ShenExcn (and friends) propagate to drivers as themselves.
+        if e isa TaskFailedException
+            inner = t.exception
+            inner !== nothing && throw(inner)
+        end
+        rethrow()
     end
 end
 
@@ -111,40 +124,6 @@ const _MKTREE = MKTREE
 max_frame_depth() = 0
 reset_max_frame_depth!() = nothing
 
-# Early-world wrapper for all user-defined and prim fns (world-age mitigation from
-# dedicated subagent). Every entry in F and every key in FA is one of these.
-# The wrapper itself is created in the initial module world; it does the invokelatest
-# on the (possibly late) raw impl and *always forces the result* so that all "public"
-# calls to KL fns (via F table, from init, smoke, tests, REPL, user Julia code) return
-# concrete values, never a pending Bounce. Internal self-tail bounces (if the while
-# opt is active inside the raw) are driven here at the boundary.
-function _safe_caller(rawfn::Function, klname::String="")
-    # Wrapper for user/kernel functions. Its only job is to drive the trampoline: the raw
-    # compiled body may return a Bounce for a cross-function tail call, and value-position
-    # callers expect a concrete value, so we force here. No `invokelatest` (we run under a
-    # top-level one — see force) and no per-call frame/Dict allocation (that was diagnostic
-    # only). This is on the hot path for every KL function call.
-    return function(args...)
-        try
-            return force(rawfn(args...))
-        catch e
-            # World-age recovery: `rawfn` may be a closure `Core.eval`d by a *runtime*
-            # define/defmacro (a macro stored in *macros*, a yacc-compiled fn, etc.) that
-            # lives in a world NEWER than this frame (which is running under a stale
-            # top-level invokelatest established before that eval). A direct call then
-            # throws a "method too new" MethodError whose `.f` is `rawfn` itself. Retry that
-            # one call in the latest world via invokelatest. The try/catch is free on the
-            # success path (only pays when an exception is actually thrown). The retry is
-            # semantics-preserving even for a genuine MethodError: invokelatest would just
-            # re-throw the same error from the latest world. See handoff.md "Julia world age".
-            if e isa MethodError && e.f === rawfn
-                return force(Base.invokelatest(rawfn, args...))
-            end
-            rethrow()
-        end
-    end
-end
-
 function ERR(msg)
     throw(mkexcn(msg))
 end
@@ -154,42 +133,40 @@ function TOEXCN(e)
     return mkexcn(string(e))
 end
 
-@inline function MKFUN(arity::Int, fn::Function, klname::String="")
-    wrapped = _safe_caller(fn, klname)
-    FA[wrapped] = arity
-    return wrapped
+# Invoke a dynamically-obtained function value with world-age recovery: `f` may be
+# a method `Core.eval`d at *runtime* (a define/defmacro, a yacc-compiled fn, a macro
+# closure from *macros*) living in a world NEWER than this frame. A direct call then
+# throws a "method too new" MethodError whose `.f` is `f` itself; retry that one
+# call in the latest world. Free on the success path; only dynamic calls pay even
+# the try — direct compiled calls never come through here.
+@inline function callfn(f::Function, args...)
+    try
+        return f(args...)
+    catch e
+        if e isa MethodError && e.f === f
+            return Base.invokelatest(f, args...)
+        end
+        rethrow()
+    end
 end
+
+@inline MKFUN(arity::Int, fn::Function, klname::String="") = ShenFn(fn, arity)
 
 @inline function PARTIAL(f, ar::Int, have::Vector)
     need = ar - length(have)
     g = function(args...)
-        extra = collect(args)
         all = copy(have)
-        append!(all, extra)
-        # Direct call (no invokelatest — we run under a top-level one). The MKFUN wrapper
-        # below forces the result.
-        return f(all...)
+        append!(all, args)
+        return callfn(_rawfn(f), all...)
     end
-    return MKFUN(need, g)
+    return ShenFn(g, need)
 end
 
-# BIND: hoisted freeze body wrapper (41.1 from shen-lua).
-# Prolog CPS (and typechecker) emit enormous chains of nested (freeze ...)
-# continuations inside arg positions (60+ deep in einsteins-riddle, t-star etc).
-# Naive codegen would produce deeply nested `MKFUN(0, () -> cexpr(body))`
-# i.e. `function() ... end` literals inside the generated Julia, blowing
-# parser limits or creating huge closure objects with heavy env capture
-# (causing SO in stlib/prolog/init paths).
-#
-# Solution: per-defun, hoist each freeze *body* to a flat KB table entry:
-#   KB[i] = function(cap1, cap2, ...) return <compiled body using caps as params> end
-# At use site (in cexpr for freeze): emit `BIND(KB[i], cap1, cap2, ...)`
-# which returns a fresh 0-ary thunk capturing the snapshot. The call site
-# itself has no function literal.
-#
-# BIND here returns a 0-ary Function (no FA entry written -- thaws call
-# via APP which handles; avoids hot-path weak table write).
-# See shen-lua prims.lua:BIND + compiler.lua CTX/kbodies/collect_free/cdefun.
+@inline _rawfn(f::ShenFn) = f.fn
+@inline _rawfn(f::Function) = f
+
+# BIND: hoisted freeze body wrapper. Returns the 0-ary thunk as a ShenFn so thaw/APP
+# know its arity without any table.
 function BIND(fn, args...)
     n = length(args)
     if n == 0
@@ -207,58 +184,36 @@ function BIND(fn, args...)
         caps = collect(args)
         raw_thunk = () -> fn(caps...)
     end
-    # Ensure _safe_caller used for BIND thunks (world-age + always force result);
-    # thaws/APP will go through bounce/force which invokelatest the (wrapped) thunk.
-    return _safe_caller(raw_thunk, "freeze-thunk")
+    return ShenFn(raw_thunk, 0)
 end
 
-@inline function APP(f, args...)
+# The dynamic-call boundary: symbol heads, computed heads, partial application,
+# over-application. Returns a concrete value (there is no trampoline). For a bare
+# host Function (driver stubs, host closures) the arity is assumed exact.
+function APP(f, args...)
     if is_symbol(f)
         fn = get(F, f.name, nothing)
         fn === nothing && ERR("not a function: $(f.name)")
         f = fn
     end
-    f isa Function || ERR("attempt to apply a non-function")
     n = length(args)
-    ar = get(FA, f, n)
+    if f isa ShenFn
+        ar = f.arity
+        g = f.fn
+    elseif f isa Function
+        ar = n
+        g = f
+    else
+        ERR("attempt to apply a non-function")
+    end
 
     if n == ar
-        # Tail-intent boundary: return a Bounce so the caller's frame can unwind if this
-        # was a tail call in the KL sense. force() at the driver (value pos, thaw, top-level eval,
-        # run_kl_string) will drive it to completion. This is the core of the trampoline.
-        # Small-arity fast path avoids collecting into Vector{Any} for bounce in common cases.
-        if n == 0
-            return bounce(f)
-        elseif n == 1
-            return bounce(f, args[1])
-        elseif n == 2
-            return bounce(f, args[1], args[2])
-        elseif n == 3
-            return bounce(f, args[1], args[2], args[3])
-        else
-            return bounce(f, args...)
-        end
+        return callfn(g, args...)
     elseif n < ar
-        # Currying path — still needs to collect for the PARTIAL representation.
-        # (Future: could use a linked "partial chain" or pre-sized buffer to reduce allocs.)
-        if n <= 3
-            if n == 0
-                return PARTIAL(f, ar, Any[])
-            elseif n == 1
-                return PARTIAL(f, ar, Any[args[1]])
-            elseif n == 2
-                return PARTIAL(f, ar, Any[args[1], args[2]])
-            else
-                return PARTIAL(f, ar, Any[args[1], args[2], args[3]])
-            end
-        else
-            return PARTIAL(f, ar, collect(args))
-        end
+        return PARTIAL(f, ar, collect(args))
     else
-        first = args[1:ar]
-        rest = args[ar+1:end]
-        r = force(f(first...))  # force the prefix (rare over-apply)
-        return APP(r, rest...)
+        r = callfn(g, args[1:ar]...)
+        return APP(r, args[ar+1:end]...)
     end
 end
 
@@ -295,17 +250,30 @@ function equal(a, b)
     return false
 end
 
+# Define (or redefine) the mangled named method `K_<name>` that compiled code calls
+# directly (see Compiler.kl_call_tail / Compiler.fnident). It forwards to the host
+# implementation `fn` at fixed arity, so Julia can specialize and inline it. KL defuns
+# get their `K_<name>` from cdefun's codegen; prims and fast-builtin overrides get theirs
+# here. Redefining an existing `K_<name>` triggers Julia's caller invalidation, so already
+# compiled kernel callers transparently pick up the new body (used by _override_builtin!).
+function define_named!(name::String, arity::Int, fn::Function)
+    ident = Symbol(Compiler.fnident(name))
+    params = [Symbol(:a, i) for i in 1:arity]
+    @eval @inline $ident($(params...)) = $fn($(params...))
+    return nothing
+end
+
 function defprim(name::String, arity::Int, fn::Function)
-    # Primitives are host functions defined in the module's initial world age: they have
-    # NO world-age hazard and never need the `_safe_caller` wrapper (which would add a
-    # per-call Dict allocation, frame push/pop, and two `invokelatest` dispatches — pure
-    # overhead on the hottest path in the system). Store the raw fn directly. Prims that
-    # delegate to APP (and could yield a Bounce, e.g. `thaw`) force their own result.
-    setfn!(name, fn)          # populates both FV (codegen) and F (public/APP)
-    FA[fn] = arity
-    Compiler.ARITY[name] = arity
-    # Register for prim direct bypass in codegen.
+    # Register in the string-keyed table (dynamic APP-of-symbol, REPL, drivers) and the
+    # codegen arity table; wrap as a ShenFn so the dynamic path knows the arity with no
+    # side-table lookup. No world-age hazard: prims live in the module's initial world.
+    setfn!(name, fn, arity)
     push!(Compiler.PRIMS, name)
+    # Compiled code emits direct calls `K_<name>(args)` for non-inlined prims at exact
+    # arity; define that method so they resolve. (INLINE_PRIM prims also get one — it is
+    # harmless and keeps APP→named dispatch uniform.)
+    define_named!(name, arity, fn)
+    return fn
 end
 
 function tonum(x)
@@ -334,8 +302,17 @@ const FAILOBJ = intern("shen.fail!")
 @inline kl_sub(a, b) = tonum(a) - tonum(b)
 @inline kl_mul(a::Real, b::Real) = a * b
 @inline kl_mul(a, b) = tonum(a) * tonum(b)
-@inline kl_div(a::Real, b::Real) = (b == 0 && ERR("division by zero"); a / b)
-@inline kl_div(a, b) = (bn = tonum(b); bn == 0 && ERR("division by zero"); tonum(a) / bn)
+# Shen `/` returns an INTEGER when the division of two integers is exact (e.g.
+# (/ 4 2) => 2, not 2.0), matching the reference ports; otherwise a float.
+@inline function kl_div(a::Real, b::Real)
+    b == 0 && ERR("division by zero")
+    (a isa Integer && b isa Integer && rem(a, b) == 0) ? div(a, b) : a / b
+end
+@inline function kl_div(a, b)
+    an = tonum(a); bn = tonum(b)
+    bn == 0 && ERR("division by zero")
+    (an isa Integer && bn isa Integer && rem(an, bn) == 0) ? div(an, bn) : an / bn
+end
 @inline kl_gt(a::Real, b::Real)  = a > b
 @inline kl_gt(a, b)  = tonum(a) > tonum(b)
 @inline kl_lt(a::Real, b::Real)  = a < b
@@ -658,8 +635,8 @@ end
 function _override_builtin!(nm::String, ar::Int, fn::Function)
     haskey(F, nm) || return  # only replace what the kernel actually defined
     SLOW_BUILTINS[nm] = F[nm]
-    setfn!(nm, fn)           # updates both FV (codegen path) and F (public/APP)
-    FA[fn] = ar
+    setfn!(nm, fn, ar)       # dynamic table + arity
+    define_named!(nm, ar, fn) # redefine K_<nm> so compiled callers use the fast version
 end
 
 # Which builtins to override is an empirical, per-function decision (see bin/bench_builtins.jl):
@@ -674,6 +651,34 @@ function install_fast_builtins!()
     _override_builtin!("reverse", 1, kl_reverse)
     _override_builtin!("length", 1, kl_length)
     _override_builtin!("append", 2, kl_append)
+    install_hush_fix!()
+    return nothing
+end
+
+# Override `pr` so *hush* gates ONLY the standard output stream, never an explicit
+# file stream. The 41.2 kernel `pr` does `(if (value *hush*) STR ...)`, which silences
+# EVERY stream under -q. The other ports converged on the opposite (shen-cl via a
+# native pr override; shen-lua/shen-rust via fix/hush-pr-file): -q hushes chatter to
+# stdout, but `pr` to a real file stream always writes. Match that so shen-julia agrees
+# on bifrost's hardened hush-file-write case. Compares stream identity to *stoutput*
+# (host ===), avoiding any KL stream-equality semantics.
+function install_hush_fix!()
+    haskey(F, "pr") || return
+    cso = get(F, "shen.char-stoutput?", nothing)
+    sws = get(F, "shen.write-string", nothing)
+    swc = get(F, "shen.write-chars", nothing)
+    s2b = get(F, "shen.string->byte", nothing)
+    (swc === nothing || s2b === nothing) && return  # kernel not as expected; leave pr alone
+    pr = function(str, stream)
+        if get(GLOBALS, "*hush*", false) === true && stream === get(GLOBALS, "*stoutput*", nothing)
+            return str
+        end
+        if sws !== nothing && cso !== nothing && Base.invokelatest(cso, stream) === true
+            return Base.invokelatest(sws, str, stream)
+        end
+        return Base.invokelatest(swc, str, stream, Base.invokelatest(s2b, str, 0), 1)
+    end
+    _override_builtin!("pr", 2, pr)
     return nothing
 end
 
@@ -721,15 +726,37 @@ function eval_kl(form)
     return Base.invokelatest(Core.eval, mod, Meta.parse(src))
 end
 
-# Root key trampoline / cross-module names at module init time. This ensures the
-# bindings for `force`, `bounce`, `is_bounce`, `Bounce` (and transitively Compiler
-# via `using`) remain visible via names()/isdefined()/getproperty even under
+# Root key cross-module names at module init time. This ensures the bindings the
+# compiler emits (`force`, `APP`, `PARTIAL`, `BIND`, `MKTREE`, `S`, `setfn!`, … — and
+# transitively Compiler via `using`) remain visible via names()/isdefined()/getproperty even under
 # PackageCompiler sysimages (ShenJulia.sys), where untraced top-level bindings can
 # disappear from the module's reflected globals unless referenced in the precomp
 # workload or here. Fixes UndefVarError(:force, ..., ShenJulia.Prims) and similar
 # in run-tests.jl micros/smoke/harness loads when using --sysimage.
-let _ = force, _ = bounce, _ = is_bounce, _ = Bounce, _ = Compiler, _ = FV, _ = setfn!
-    # FV and setfn! are referenced by name in Core.eval'd codegen output, so pin them too.
+let _ = force, _ = Compiler, _ = setfn!, _ = APP, _ = PARTIAL, _ = BIND, _ = MKTREE,
+    _ = MKLIST, _ = S, _ = ShenFn, _ = callfn, _ = with_shen_stack, _ = KDATA
+    # These names are emitted by the compiler into Core.eval'd codegen output (and the
+    # named-method bridge), so pin them so PackageCompiler sysimages keep the bindings.
+end
+
+# --- Baked kernel (fast boot) ---------------------------------------------
+# bin/gen_kernel.jl compiles the whole 41.2 kernel ahead of time into
+# kernel_generated.jl: top-level `function K_...` methods (so PRECOMPILATION
+# bakes them — no per-startup Core.eval/JIT of ~1138 functions) plus
+# `_register_baked_kernel!()` which wires them into F/ARITY at boot. Every name
+# the generated file references (setfn!, S, APP, PARTIAL, MKFUN, BIND, MKTREE,
+# force, callfn, ShenFn, TOEXCN, KDATA, and the K_ methods) is in scope here.
+# Guarded so the source path still works before the file has been generated.
+# NOTE: Julia does not track an isfile() result as a precompile dependency, so if
+# you (re)generate kernel_generated.jl you must force a recompile of this module
+# (a content change here, or `Base.compilecache`), or the stale image silently
+# keeps HAS_BAKED_KERNEL=false. [baked-kernel guard v3]
+if isfile(joinpath(@__DIR__, "kernel_generated.jl"))
+    include(joinpath(@__DIR__, "kernel_generated.jl"))
+    const HAS_BAKED_KERNEL = true
+else
+    const HAS_BAKED_KERNEL = false
+    _register_baked_kernel!() = error("baked kernel not generated — run: julia --project=. bin/gen_kernel.jl")
 end
 
 end # module Prims
