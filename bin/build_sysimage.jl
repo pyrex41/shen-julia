@@ -96,11 +96,17 @@ open(precomp_script, "w") do io
 end
 
 println("Building ShenJulia sysimage (this will take minutes and significant RAM; one-time cost)...")
-create_sysimage(["ShenJulia"];
-    sysimage_path = sysout,
-    precompile_execution_file = precomp_script,
-    # cpu_target="native" for max perf on this machine; omit or set "generic" for portable.
-)
+# cpu_target controls portability vs peak speed:
+#   - unset            -> PackageCompiler default (native): fastest on THIS machine,
+#                         but the image may SIGILL on an older/different CPU.
+#   - SHEN_SYSIMAGE_CPU_TARGET="generic"  -> portable across CPUs of the same arch
+#                         (used by the release CI so a downloaded .sys runs anywhere).
+#     A good portable-but-fast value for x86-64 is e.g.
+#     "generic;sandybridge,-xsaveopt,clone_all;haswell,-rdrnd,base(1)".
+ct = get(ENV, "SHEN_SYSIMAGE_CPU_TARGET", "")
+kw = (; sysimage_path = sysout, precompile_execution_file = precomp_script)
+isempty(ct) || (kw = (; kw..., cpu_target = ct))
+create_sysimage(["ShenJulia"]; kw...)
 
 println("Sysimage written: ", sysout)
 println("Size: ", filesize(sysout) / 1024 / 1024, " MiB")
