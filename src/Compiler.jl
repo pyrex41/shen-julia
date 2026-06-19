@@ -36,6 +36,7 @@ const INLINE_PRIM = Dict{String, String}(
     "+" => "kl_add", "-" => "kl_sub", "*" => "kl_mul", "/" => "kl_div",
     ">" => "kl_gt", "<" => "kl_lt", ">=" => "kl_gte", "<=" => "kl_lte",
     "=" => "kl_eq", "cons" => "kl_cons", "hd" => "kl_hd", "tl" => "kl_tl",
+    "empty?" => "kl_emptyp", "cons?" => "kl_consp",
 )
 
 car(x::Cons) = x.h
