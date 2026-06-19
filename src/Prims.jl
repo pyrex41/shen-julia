@@ -191,10 +191,20 @@ end
 # over-application. Returns a concrete value (there is no trampoline). For a bare
 # host Function (driver stubs, host closures) the arity is assumed exact.
 function APP(f, args...)
+    # When the head is a SYMBOL we resolve it by name in F and must call it in the
+    # LATEST world age (invokelatest), not the caller's. Shen semantics are that a
+    # `(define foo ...)` takes effect immediately — but with named-method dispatch a
+    # single already-executing compiled chunk (e.g. the kerneltests `do` block that
+    # loads a file and then calls one of its functions) is pinned to its start world,
+    # so a redefinition done earlier in that same chunk would otherwise be invisible
+    # and the stale method would run. Resolving + invokelatest here makes redefinition
+    # visible. Direct K_ calls and higher-order APP-of-a-function-value stay fast.
+    from_symbol = false
     if is_symbol(f)
         fn = get(F, f.name, nothing)
         fn === nothing && ERR("not a function: $(f.name)")
         f = fn
+        from_symbol = true
     end
     n = length(args)
     if f isa ShenFn
@@ -208,11 +218,11 @@ function APP(f, args...)
     end
 
     if n == ar
-        return callfn(g, args...)
+        return from_symbol ? Base.invokelatest(g, args...) : callfn(g, args...)
     elseif n < ar
         return PARTIAL(f, ar, collect(args))
     else
-        r = callfn(g, args[1:ar]...)
+        r = from_symbol ? Base.invokelatest(g, args[1:ar]...) : callfn(g, args[1:ar]...)
         return APP(r, args[ar+1:end]...)
     end
 end

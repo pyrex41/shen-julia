@@ -180,12 +180,26 @@ function kl_call_tail(form::Cons, env::Dict{String,String}, selfname::Union{Stri
                 # and can inline it. This is the hot path for all kernel-to-kernel calls.
                 return "$(fnident(name))($(argstr))"
             elseif length(args) < ar
-                pack = isempty(args) ? "Any[]" : "[$(argstr)]"
-                return "PARTIAL($(fnident(name)), $ar, $pack)"
+                # Under-application. We could bake PARTIAL($(fnident(name)), $ar, ...)
+                # here, but $ar is the arity *at compile time*. Shen semantics decide
+                # partial-vs-full from the function's CURRENT arity at call time, so a
+                # name redefined to a smaller arity between compile and call (e.g. a
+                # (defprolog complement ...) earlier, then (define complement ...) loaded
+                # inside the same report) would wrongly stay a partial. Route through
+                # dynamic APP so the arity is resolved at runtime. The kernel never emits
+                # this branch (0 PARTIAL calls baked), so there is no hot-path cost.
+                return isempty(args) ? "APP($(symlit(name)))" : "APP($(symlit(name)), $(argstr))"
             else
-                first = cargs[1:ar]
-                rest = cargs[ar+1:end]
-                return "APP($(fnident(name))($(join(first, ", "))), $(join(rest, ", ")))"
+                # Over-application: more args than the compile-time arity. Baking
+                # $ar here splits the args at the wrong boundary if $name is redefined
+                # to a *larger* arity between compile and call. This actually happens in
+                # the kerneltests harness: search.shen defines depth/3, then the
+                # "depth first search" report compiles (depth 4 L1 L2 L3) — 4 args vs the
+                # stale arity 3 — and only afterwards loads depth.shen's depth/4. The baked
+                # split would call the stale depth/3 (dropping the 4th arg) and diverge.
+                # Route through dynamic APP so the current arity decides the split at call
+                # time. APP itself handles the over-application (apply ar, then APP the rest).
+                return "APP($(symlit(name)), $(argstr))"
             end
         else
             # Dynamic function name (arity unknown at compile time): resolve + call via APP.
