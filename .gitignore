@@ -12,3 +12,6 @@ precompiled_kernel.jls
 # Julia coverage / allocation profiling output.
 *.cov
 *.jl.*.mem
+
+# Transient sysimage build trace (written + removed by bin/build_sysimage.jl)
+sysimage_precompile.jl

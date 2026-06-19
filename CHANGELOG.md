@@ -6,6 +6,32 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/)
 
 ## [Unreleased]
 
+### Added
+- Ahead-of-time baked kernel (`src/kernel_generated.jl` via `bin/gen_kernel.jl`)
+  and PackageCompiler sysimage (`bin/build_sysimage.jl`) for ~0.5–1.5 s startup.
+- Launcher CLI `bin/shen` (eval / script / repl / --version), driving the
+  standard `shen.x.launcher.main` for cross-port parity.
+- `bin/build_app_sysimage.jl` — bake a user program into a fast-start sysimage.
+- `bin/run_canonical.jl` — run the official kerneltests harness.
+- GitHub Actions workflow to build + publish per-platform release sysimages.
+- Integration as a first-class port in bifrost and ratatoskr (stage-1 + stage-2
+  builder `bin/ratatoskr-build.jl`).
+
+### Changed
+- Upgraded the vendored kernel from **41.1 to 41.2**.
+- Runtime perf overhaul: each KL defun compiles to a named native Julia method
+  (`K_<name>`); no `Bounce` trampoline (deep recursion runs on a reserved
+  big-stack `Task`); `empty?`/`cons?` inlined on the hot path. Compute-bound code
+  now runs 6–16× faster than the SBCL reference port.
+- Rewrote `README.md` for the Julia port (startup/sysimage story, releases,
+  per-program baking).
+
+### Fixed
+- Arity-staleness divergence: under/over-application of a statically-known name
+  whose arity changes between compile and call now resolves the current arity at
+  call time (matches Shen semantics). Fixes the `binary`/`complement` and
+  `depth first search` kerneltests; suite now passes **134/134**.
+
 ## [41.1] - 2026-03-08
 
 ### Added

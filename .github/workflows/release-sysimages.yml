@@ -1,0 +1,74 @@
+name: Release sysimages
+
+# Build a prebaked ShenJulia sysimage for each platform and attach it to the
+# GitHub release. A sysimage is tied to the OS, CPU architecture, and Julia
+# minor version it was built for, so each asset is named accordingly:
+#
+#   ShenJulia-<os>-<arch>-julia<ver>.sys
+#
+# Triggered when a tag like v0.2.0 is pushed, or manually via the Actions tab.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to attach assets to (e.g. v0.2.0)"
+        required: true
+
+env:
+  JULIA_VERSION: "1.12"
+  # Portable across CPUs of the same arch (a native build can SIGILL elsewhere).
+  SHEN_SYSIMAGE_CPU_TARGET: "generic"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            label: linux-x86_64
+          - os: macos-14
+            label: macos-aarch64
+          - os: macos-13
+            label: macos-x86_64
+          - os: windows-latest
+            label: windows-x86_64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: ${{ env.JULIA_VERSION }}
+
+      - name: Instantiate
+        run: julia --project=. -e 'import Pkg; Pkg.instantiate()'
+
+      - name: Build sysimage
+        run: julia --project=. bin/build_sysimage.jl
+
+      - name: Name the asset
+        shell: bash
+        run: |
+          ver="${{ env.JULIA_VERSION }}"
+          asset="ShenJulia-${{ matrix.label }}-julia${ver}.sys"
+          mv ShenJulia.sys "$asset"
+          echo "ASSET=$asset" >> "$GITHUB_ENV"
+
+      - name: Smoke test the sysimage
+        shell: bash
+        run: |
+          SHEN_JULIA_SYSIMAGE="$ASSET" ./bin/shen --version
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          files: ${{ env.ASSET }}
