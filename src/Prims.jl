@@ -335,6 +335,12 @@ end
 @inline kl_cons(a, b) = cons(a, b)
 @inline kl_hd(x) = x isa Cons ? x.h : ERR("hd of non-cons")
 @inline kl_tl(x) = x isa Cons ? x.t : ERR("tl of non-cons")
+# `empty?`/`cons?` are pure predicates over the runtime list representation
+# ([] === NIL, pairs are Cons), so they inline to a single type/identity check —
+# the same hot-path assumption as the inlined hd/tl/+ above. Removes a function
+# call per iteration in list-walking loops (sum/map/reverse/...).
+@inline kl_emptyp(x) = x === NIL
+@inline kl_consp(x) = x isa Cons
 
 # arithmetic
 defprim("+", 2, kl_add)
