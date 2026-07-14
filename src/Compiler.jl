@@ -39,6 +39,18 @@ const INLINE_PRIM = Dict{String, String}(
     "empty?" => "kl_emptyp", "cons?" => "kl_consp",
 )
 
+# Kernel functions that are REDEFINED at runtime by kernel code itself, so their
+# baked callers must dispatch to the *current* definition rather than the one
+# frozen into their own world age. `shen.demod` is rebuilt by every `(synonyms …)`
+# form — `shen.synonyms-h` does `(eval (define shen.demod …))`. Because Julia pins
+# method resolution to the caller's world age, a synonym registered earlier in the
+# SAME `load` / `check-eval-and-print` is invisible to the type checker running in
+# that same call, so synonym-typed programs (c-minus, proof assistant, secd, …)
+# fail type checking. Emitting these calls through `Base.invokelatest` forces
+# latest-world dispatch, matching ports without a world-age model. Kept tiny: only
+# functions the kernel eval-redefines mid-run belong here (grep `(eval (cons define`).
+const WORLD_AGE_SENSITIVE = Set{String}(["shen.demod"])
+
 car(x::Cons) = x.h
 cdr(x::Cons) = x.t
 
@@ -177,6 +189,11 @@ function kl_call_tail(form::Cons, env::Dict{String,String}, selfname::Union{Stri
                 end
                 inl = get(INLINE_PRIM, name, nothing)
                 inl !== nothing && return "$inl($(argstr))"
+                if name in WORLD_AGE_SENSITIVE
+                    # Redefined at runtime (see WORLD_AGE_SENSITIVE): force latest-world
+                    # dispatch so mid-load redefinitions (e.g. a synonym) are visible.
+                    return "Base.invokelatest($(fnident(name)), $(argstr))"
+                end
                 # Direct static call to the named method — Julia resolves, specializes,
                 # and can inline it. This is the hot path for all kernel-to-kernel calls.
                 return "$(fnident(name))($(argstr))"

@@ -18,16 +18,23 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/)
   property/arity/lambda tables, `types.kl` runs its declares); `Boot.initialise!`
   now calls `shen.initialise` only if defined. `*property-vector*` is a plain
   `(vector 20000)` (no dict layer); `put`/`get` remain kernel defuns.
-- **Known regression:** the canonical kerneltests suite (`bin/run_canonical.jl`,
-  whole-file `load`) drops from 134/134 to **122/134**. The refresh type-checker
-  performs more inference steps per form; a batch `load` never resets
-  `shen.*infs*` between forms (only the REPL loop does), so the later
-  type-checking-heavy loads exceed the suite's `(maxinferences 1e7)` cumulatively
-  and cascade. Evaluating form-by-form (REPL semantics, fresh inference budget per
-  form) clears the accumulation failures but exposes a few genuine divergences in
-  the refreshed type-checker on the heaviest programs (deep recursion →
-  `StackOverflowError` on `depth.shen`, type errors on `c-minus`/`secd`). See the
-  PR description for the full breakdown.
+- **Tests: 134/134** on the canonical kerneltests (`bin/run_canonical.jl`,
+  unchanged whole-file `load`).
+
+### Fixed (kernel/tarver-s41-refresh)
+- **World-age barrier on runtime-redefined `shen.demod` (synonyms).** `(synonyms
+  …)` rebuilds `shen.demod` at runtime via `(eval (define shen.demod …))`. Because
+  the kernel is baked into native methods and Julia pins method resolution to the
+  caller's world age, a synonym registered earlier in the SAME `load` /
+  `check-eval-and-print` was invisible to the type checker running in that call, so
+  every synonym-typed program failed type checking (`c-minus`, `proof assistant`,
+  `secd`, `qmachine`, `depth`, …). The failed expansions also made the checker
+  backtrack heavily, which surfaced as `maximum inferences exceeded` (cumulative)
+  and a `StackOverflowError`. Fix: the compiler now emits calls to
+  runtime-redefined functions (`Compiler.WORLD_AGE_SENSITIVE`, currently just
+  `shen.demod`) through `Base.invokelatest`, forcing latest-world dispatch so
+  mid-load redefinitions are seen — matching ports without a world-age model. This
+  single fix recovered all 12 previously-failing kernel tests.
 
 ### Added
 - Ahead-of-time baked kernel (`src/kernel_generated.jl` via `bin/gen_kernel.jl`)
