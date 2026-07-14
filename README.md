@@ -24,8 +24,8 @@ test suite **134/134**.
 ## Requirements
 
 - **Julia 1.12** (the prebuilt release sysimages are pinned to this version — a
-  sysimage built for one Julia minor version will not load on another). From
-  source, Julia ≥ 1.10 works.
+  sysimage built for one Julia minor version will not load on another; CI and
+  the from-source path are only tested on 1.12).
 - No other dependencies; `Project.toml`/`Manifest.toml` pin everything.
 
 ## Install
