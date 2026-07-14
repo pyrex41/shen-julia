@@ -6,6 +6,36 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/)
 
 ## [Unreleased]
 
+### Changed (kernel/tarver-s41-refresh)
+- Vendored kernel updated to **Mark Tarver's S41.2 (2026-07-11 refresh)** — a
+  restructured kernel that reuses the "41.2" version string but is a different
+  lineage from the community `ShenOSKernel-41.2`. Canonical source:
+  `pyrex41/shen-s41.1` tag `s41.2-pristine-20260711`. See `klambda/PROVENANCE.md`.
+  Kernel file set is now 15 upstream `.kl` files (adds `backend.kl`; drops
+  `init.kl`, `dict.kl`, `compiler.kl`, `stlib.kl`) plus the retained community
+  `extension-launcher.kl`. There is no longer a `shen.initialise`: init runs as
+  the kernel's own top-level forms at load (`declarations.kl` builds the
+  property/arity/lambda tables, `types.kl` runs its declares); `Boot.initialise!`
+  now calls `shen.initialise` only if defined. `*property-vector*` is a plain
+  `(vector 20000)` (no dict layer); `put`/`get` remain kernel defuns.
+- **Tests: 134/134** on the canonical kerneltests (`bin/run_canonical.jl`,
+  unchanged whole-file `load`).
+
+### Fixed (kernel/tarver-s41-refresh)
+- **World-age barrier on runtime-redefined `shen.demod` (synonyms).** `(synonyms
+  …)` rebuilds `shen.demod` at runtime via `(eval (define shen.demod …))`. Because
+  the kernel is baked into native methods and Julia pins method resolution to the
+  caller's world age, a synonym registered earlier in the SAME `load` /
+  `check-eval-and-print` was invisible to the type checker running in that call, so
+  every synonym-typed program failed type checking (`c-minus`, `proof assistant`,
+  `secd`, `qmachine`, `depth`, …). The failed expansions also made the checker
+  backtrack heavily, which surfaced as `maximum inferences exceeded` (cumulative)
+  and a `StackOverflowError`. Fix: the compiler now emits calls to
+  runtime-redefined functions (`Compiler.WORLD_AGE_SENSITIVE`, currently just
+  `shen.demod`) through `Base.invokelatest`, forcing latest-world dispatch so
+  mid-load redefinitions are seen — matching ports without a world-age model. This
+  single fix recovered all 12 previously-failing kernel tests.
+
 ### Added
 - Ahead-of-time baked kernel (`src/kernel_generated.jl` via `bin/gen_kernel.jl`)
   and PackageCompiler sysimage (`bin/build_sysimage.jl`) for ~0.5–1.5 s startup.

@@ -766,7 +766,7 @@ end
 # NOTE: Julia does not track an isfile() result as a precompile dependency, so if
 # you (re)generate kernel_generated.jl you must force a recompile of this module
 # (a content change here, or `Base.compilecache`), or the stale image silently
-# keeps HAS_BAKED_KERNEL=false. [baked-kernel guard v4 — empty?/cons? inlined]
+# keeps HAS_BAKED_KERNEL=false. [baked-kernel guard v6 — S41.2 refresh + world-age demod fix]
 if isfile(joinpath(@__DIR__, "kernel_generated.jl"))
     include(joinpath(@__DIR__, "kernel_generated.jl"))
     const HAS_BAKED_KERNEL = true

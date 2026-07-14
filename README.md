@@ -2,6 +2,12 @@
 
 A [Julia](https://julialang.org) port of the **Shen 41.2** language kernel.
 
+> **Kernel lineage:** as of the `kernel/tarver-s41-refresh` work this vendors Mark
+> Tarver's **S41.2 (2026-07-11 refresh)** — a restructured kernel that reuses the
+> "41.2" version string but is a different lineage from the community
+> `ShenOSKernel-41.2`. `(version)` still reports `"41.2"`. Details, provenance and
+> the delta are in [`klambda/PROVENANCE.md`](klambda/PROVENANCE.md).
+
 Shen programs compile to native Julia methods (one `K_<name>` method per Shen
 function), so once warmed up this port runs compute-bound code **6–16× faster
 than the reference SBCL port** (`shen-cl`) and passes the full official kernel
@@ -192,7 +198,7 @@ Repository layout:
 | `bin/build_app_sysimage.jl` | Bake a user `.shen` into its own sysimage |
 | `bin/ratatoskr-build.jl` | Ratatoskr stage-2 standalone-artifact builder |
 | `bin/run_canonical.jl` | Run the official kerneltests harness (134/134) |
-| `klambda/` | Vendored Shen 41.2 kernel sources |
+| `klambda/` | Vendored Shen kernel sources (Tarver S41.2 2026-07-11 refresh; see `klambda/PROVENANCE.md`) |
 | `tests/` | Official Shen test suite + sample programs |
 
 ---
