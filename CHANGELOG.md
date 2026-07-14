@@ -6,6 +6,29 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/)
 
 ## [Unreleased]
 
+### Changed (kernel/tarver-s41-refresh)
+- Vendored kernel updated to **Mark Tarver's S41.2 (2026-07-11 refresh)** — a
+  restructured kernel that reuses the "41.2" version string but is a different
+  lineage from the community `ShenOSKernel-41.2`. Canonical source:
+  `pyrex41/shen-s41.1` tag `s41.2-pristine-20260711`. See `klambda/PROVENANCE.md`.
+  Kernel file set is now 15 upstream `.kl` files (adds `backend.kl`; drops
+  `init.kl`, `dict.kl`, `compiler.kl`, `stlib.kl`) plus the retained community
+  `extension-launcher.kl`. There is no longer a `shen.initialise`: init runs as
+  the kernel's own top-level forms at load (`declarations.kl` builds the
+  property/arity/lambda tables, `types.kl` runs its declares); `Boot.initialise!`
+  now calls `shen.initialise` only if defined. `*property-vector*` is a plain
+  `(vector 20000)` (no dict layer); `put`/`get` remain kernel defuns.
+- **Known regression:** the canonical kerneltests suite (`bin/run_canonical.jl`,
+  whole-file `load`) drops from 134/134 to **122/134**. The refresh type-checker
+  performs more inference steps per form; a batch `load` never resets
+  `shen.*infs*` between forms (only the REPL loop does), so the later
+  type-checking-heavy loads exceed the suite's `(maxinferences 1e7)` cumulatively
+  and cascade. Evaluating form-by-form (REPL semantics, fresh inference budget per
+  form) clears the accumulation failures but exposes a few genuine divergences in
+  the refreshed type-checker on the heaviest programs (deep recursion →
+  `StackOverflowError` on `depth.shen`, type errors on `c-minus`/`secd`). See the
+  PR description for the full breakdown.
+
 ### Added
 - Ahead-of-time baked kernel (`src/kernel_generated.jl` via `bin/gen_kernel.jl`)
   and PackageCompiler sysimage (`bin/build_sysimage.jl`) for ~0.5–1.5 s startup.

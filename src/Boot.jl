@@ -1,4 +1,9 @@
-# Boot: load the Shen 41.1 KLambda kernel and run shen.initialise.
+# Boot: load Mark Tarver's S41.2 (2026-07-11 refresh) KLambda kernel.
+#
+# This kernel has NO shen.initialise: initialisation is performed by the kernel's
+# own top-level forms (declarations.kl builds the property/arity/lambda tables;
+# types.kl runs 161 declares), which the baked registrar / source loader run at
+# load time. See klambda/PROVENANCE.md.
 
 module Boot
 
@@ -13,11 +18,18 @@ using Serialization
 
 export load_kernel!, initialise!, run_kl_string, find_kldir, precompile_kernel_to_file!
 
+# Upstream boot order (sources/make.shen) is:
+#   yacc core load prolog reader sequent sys t-star toplevel track types
+#   writer backend declarations   then   macros
+# We move `declarations` BEFORE `types` because the baked/source loader runs all
+# defuns first and only then the top-level forms in file order: `declarations`
+# creates *property-vector* + the arity table, which the 161 top-level (declare)
+# forms in `types` require. `extension-launcher` (community add-on, not in
+# Tarver's distribution) is appended last for the eval/script/--version CLI.
 const KERNEL_FILES = [
-    "toplevel", "core", "sys", "dict", "sequent", "yacc", "reader", "prolog",
-    "track", "load", "writer", "macros", "declarations", "types", "t-star", "init",
-    "extension-features", "extension-expand-dynamic", "extension-launcher",
-    "compiler", "stlib",
+    "yacc", "core", "load", "prolog", "reader", "sequent", "sys", "t-star",
+    "toplevel", "track", "writer", "backend", "declarations", "types", "macros",
+    "extension-launcher",
 ]
 
 function find_kldir()
@@ -120,127 +132,21 @@ function load_kernel!(verbose::Bool=false)
 end
 
 function initialise!()
+    # Tarver's S41.2 refresh has no shen.initialise — the kernel's top-level forms
+    # (declarations.kl / types.kl) already ran during load_kernel! and populated
+    # *property-vector*, the arity/lambda tables, *macros*, the globals, etc. This
+    # step is kept only for backward compatibility with community kernels that DO
+    # define shen.initialise; on the refresh it is a no-op.
     fn = get(Prims.F, "shen.initialise", nothing)
-    fn === nothing && error("shen.initialise not defined after kernel load")
-    # Drive via explicit trampoline + frame stack main "loop" (force does the driving; frames track).
-    # This + self-while in emitted + BIND/MKTREE avoids deep Julia calls for the init/prolog/stlib paths.
-    # Seed initialise-environment *early* (before full shen.initialise) to ensure *macros*, *tc*,
-    # *property-vector*, shen.*special* etc are populated even if later parts (lambda-forms for printF,
-    # signedfuncs, or stlib/prolog deep) hit issues; prevents "shen.printF undefined" and *macros* errors.
-    # Use frames (reset + measure) so init/prolog use explicit tracking, bound Julia via self-tails.
-    Prims.reset_max_frame_depth!()
-    pre = Prims.max_frame_depth()
-    initenv = get(Prims.F, "shen.initialise-environment", nothing)
-    if initenv !== nothing
+    if fn !== nothing
+        Prims.reset_max_frame_depth!()
         try
-            Base.invokelatest(initenv)
+            Base.invokelatest(fn)
         catch e
-            println(stderr, "  [init] initialise-environment partial: ", typeof(e))
+            println(stderr, "  [init] shen.initialise threw (", typeof(e), ")")
         end
     end
-    # Also try lambda-forms early (populates shen.printF, print-freshterm etc in lambda table) to mitigate
-    # "fn: shen.printF undefined" even on partial env/init.
-    lamforms = get(Prims.F, "shen.initialise-lambda-forms", nothing)
-    if lamforms !== nothing
-        try
-            Base.invokelatest(lamforms)
-        catch e
-            println(stderr, "  [init] initialise-lambda-forms partial: ", typeof(e))
-        end
-    end
-    # now full initialise (which re-does env + lambda-forms + signed)
-    res = nothing
-    try
-        res = Base.invokelatest(fn)
-    catch e
-        println(stderr, "  [init] shen.initialise threw (", typeof(e), "); completing with manual seed for *macros*/printF/*tc*/etc + frames")
-        _manual_complete_init_state!()
-        # try lambda and signed manually too
-        for nm in ("shen.initialise-lambda-forms", "shen.initialise-signedfuncs")
-            f = get(Prims.F, nm, nothing)
-            if f !== nothing
-                try; Base.invokelatest(f); catch; end
-            end
-        end
-        res = nothing
-    end
-    post = Prims.max_frame_depth()
-    # Report for measurement (coord with precomp/VM: after successful init, frames should be empty, can snapshot).
-    if post > pre
-        println(stderr, "  [frames] init used max explicit depth ~", post)
-    end
-    # If init completed without SO, post-init state ( *macros* etc ) is clean; pre-gen could snapshot more here.
-    return res
-end
-
-# Manual completion of init state (bypass crashing shen.initialise-environment body e.g. hd on () in
-# arity/prolog setup or value order). Seeds exactly the vars from init.kl so *macros*, *tc*, printF
-# (via lambda), property etc are present for harness/kerneltests/reports. Allows "clean full init"
-# from driver view, higher counters, no "printF undefined". Uses frames context (pre/post already).
-function _manual_complete_init_state!()
-    G = Prims.GLOBALS
-    Fd = Prims.F
-    G["shen.*history*"] = NIL
-    G["shen.*tc*"] = false
-    G["*tc*"] = false
-    try
-        d = Base.invokelatest(get(Fd, "shen.dict", x->Prims.make_absvector(Int(x), Prims.FAILOBJ)), 20000)
-        G["*property-vector*"] = d
-    catch
-        G["*property-vector*"] = Prims.make_absvector(20000, Prims.FAILOBJ)
-    end
-    macros_fn = get(Fd, "shen.macros", nothing)
-    if macros_fn !== nothing
-        G["*macros*"] = cons( cons( intern("shen.macros"), macros_fn ) , NIL )
-    end
-    G["shen.*gensym*"] = 0
-    G["shen.*tracking*"] = NIL
-    G["shen.*profiled*"] = NIL
-    # *special* long cons abbreviated but sufficient for most; full would mirror kl
-    G["shen.*special*"] = cons( intern("@p"), cons(intern("@s"), cons(intern("@v"), cons( intern("cons"), cons(intern("lambda"), cons(intern("let"), cons(intern("where"), cons(intern("set"), cons(intern("open"), cons(intern("input+"), cons(intern("type"), NIL)))))))))))
-    G["shen.*extraspecial*"] = NIL
-    G["shen.*spy*"] = false
-    G["shen.*datatypes*"] = NIL
-    G["shen.*alldatatypes*"] = NIL
-    G["shen.*shen-type-theory-enabled?*"] = true
-    G["shen.*package*"] = nothing  # null
-    G["shen.*synonyms*"] = NIL
-    G["shen.*system*"] = NIL
-    G["shen.*occurs*"] = true
-    G["shen.*factorise?*"] = false
-    G["shen.*maxinferences*"] = 1000000
-    G["*maximum-print-sequence-size*"] = 20
-    G["shen.*call*"] = 0
-    G["shen.*infs*"] = 0
-    G["*hush*"] = false
-    G["shen.*optimise*"] = false
-    G["*version*"] = "41.2"
-    G["shen.*names*"] = NIL
-    G["shen.*step*"] = false
-    G["shen.*it*"] = ""
-    G["shen.*residue*"] = NIL
-    G["*absolute*"] = NIL
-    G["shen.*prolog-memory*"] = 1000
-    G["shen.*loading?*"] = false
-    G["shen.*userdefs*"] = NIL
-    G["shen.*demodulation-function*"] = (X -> X)  # lambda stub
-    if !haskey(G, "*home-directory*"); G["*home-directory*"] = ""; end
-    # sterror from stoutput if present
-    sto = get(G, "*stoutput*", nothing)
-    if sto !== nothing && !haskey(G, "*sterror*"); G["*sterror*"] = sto; end
-    try
-        pmf = get(Fd, "prolog-memory", nothing)
-        if pmf !== nothing; Base.invokelatest(pmf, 10000); end
-    catch; end
-    # arity table etc best effort (long, may crash again so guarded)
-    try
-        arf = get(Fd, "shen.initialise-arity-table", nothing)
-        if arf !== nothing
-            # minimal to avoid later errors; full list from kl would be ideal but this seeds key
-            Base.invokelatest(arf, cons(intern("abort"), cons(0, cons(intern("absolute"), cons(1, NIL)))))
-        end
-    catch; end
-    println(stderr, "  [init] manual env state seeded (bypassed hd crash etc)")
+    return nothing
 end
 
 function run_kl_string(src::String)
