@@ -706,6 +706,12 @@ const KDATA = Compiler.KDATA
 # during Core.eval in compile_and_load! (Prims module). No extra const needed.
 # (MKTREE fn already binds the name; _MKTREE alias above for any legacy emit.)
 
+# When non-nothing, every KL `(defun …)` form eval_kl compiles is also recorded here
+# (in order). bin/gen_stlib.jl sets this, runs a gen-time `(load "install.shen")` to
+# compile Tarver's Lib/StLib, and re-emits the recorded forms through the same
+# cdefun_parts path gen_kernel uses — so the stdlib bakes exactly like the kernel.
+const DEFUN_RECORDER = Ref{Union{Nothing,Vector{Any}}}(nothing)
+
 function compile_and_load!(src::String, chunkname::String)
     mod = @__MODULE__
     try
@@ -732,6 +738,8 @@ function eval_kl(form)
         # Source-codegen path: compile to Julia and let the JIT specialize it. This is the
         # same path the kernel boots through (proven correct) and benchmarks ~6x faster than
         # the old bytecode VM, which also produced wrong results.
+        rec = DEFUN_RECORDER[]
+        rec === nothing || push!(rec, form)
         compile_and_load!(Compiler.compile_top(form), "defun")
         return form.t.h
     end
@@ -773,6 +781,23 @@ if isfile(joinpath(@__DIR__, "kernel_generated.jl"))
 else
     const HAS_BAKED_KERNEL = false
     _register_baked_kernel!() = error("baked kernel not generated — run: julia --project=. bin/gen_kernel.jl")
+end
+
+# Baked StLib (bin/gen_stlib.jl): the Shen standard library (Tarver Lib/StLib),
+# compiled ahead of time into stlib_generated.jl exactly like the kernel — top-level
+# K_ methods baked by precompilation + `_register_baked_stlib!()` run at boot AFTER
+# the kernel's own registration (so a stdlib defun that shadows a kernel one wins, as
+# it would under a source `(load "install.shen")`). Guarded so the port still boots
+# (kernel-only) before StLib has been generated — that is exactly the state gen_stlib
+# itself runs in. Same isfile()-not-a-precompile-dep caveat as the kernel guard above:
+# after (re)generating stlib_generated.jl, bump this marker to force a recompile.
+# [baked-stlib guard v5 — Tarver Lib/StLib, 316 fns, recognisers excluded]
+if isfile(joinpath(@__DIR__, "stlib_generated.jl"))
+    include(joinpath(@__DIR__, "stlib_generated.jl"))
+    const HAS_BAKED_STLIB = true
+else
+    const HAS_BAKED_STLIB = false
+    _register_baked_stlib!() = nothing
 end
 
 end # module Prims

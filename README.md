@@ -182,6 +182,16 @@ julia --project=. bin/gen_kernel.jl    # regenerate src/kernel_generated.jl + ke
 julia --project=. bin/build_sysimage.jl
 ```
 
+The **standard library** (Tarver's `Lib/StLib`, vendored under `lib/stlib/`) is
+baked the same way — it ships as Shen *source*, so a from-source load costs ~50 s;
+`bin/gen_stlib.jl` compiles it once into `src/stlib_generated.jl` (loaded at boot at
+~no cost). After changing `lib/stlib/**` regenerate it and bump the
+`[baked-stlib guard vN]` marker in `src/Prims.jl`:
+
+```bash
+julia --project=. bin/gen_stlib.jl     # regenerate src/stlib_generated.jl + kernel_stlib_arity.jls
+```
+
 Repository layout:
 
 | Path | Role |
@@ -192,8 +202,11 @@ Repository layout:
 | `src/Prims.jl` | Host primitives, `APP`/`PARTIAL`, `eval_kl`, baked-kernel include |
 | `src/Boot.jl` | Kernel load (baked fast path + source fallback), `shen.initialise` |
 | `src/kernel_generated.jl` | **auto-generated** baked 41.2 kernel (do not edit) |
+| `src/stlib_generated.jl` | **auto-generated** baked standard library (do not edit) |
 | `bin/shen`, `bin/shen.jl` | CLI launcher |
 | `bin/gen_kernel.jl` | Ahead-of-time kernel generator |
+| `bin/gen_stlib.jl` | Ahead-of-time standard-library generator (from `lib/stlib/`) |
+| `lib/stlib/` | Vendored Shen standard library (Tarver `Lib/StLib`; see `lib/stlib/PROVENANCE.md`) |
 | `bin/build_sysimage.jl` | Base sysimage builder (honours `SHEN_SYSIMAGE_CPU_TARGET`) |
 | `bin/build_app_sysimage.jl` | Bake a user `.shen` into its own sysimage |
 | `bin/ratatoskr-build.jl` | Ratatoskr stage-2 standalone-artifact builder |

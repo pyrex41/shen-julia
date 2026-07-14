@@ -180,6 +180,7 @@ end
 
 const KERNEL_ARITY_PATH = joinpath(dirname(@__DIR__), "kernel_arity.jls")
 const KERNEL_KDATA_PATH = joinpath(dirname(@__DIR__), "kernel_kdata.jls")
+const STLIB_ARITY_PATH  = joinpath(dirname(@__DIR__), "kernel_stlib_arity.jls")
 
 function load_kernel_baked!(verbose::Bool=false)
     # Restore the literal table the baked methods index (KDATA) and the defun arity
@@ -193,6 +194,17 @@ function load_kernel_baked!(verbose::Bool=false)
         merge!(Compiler.ARITY, Serialization.deserialize(KERNEL_ARITY_PATH))
     end
     Base.invokelatest(getfield(Prims, :_register_baked_kernel!))
+    # Register the baked StLib on top of the kernel (methods already baked by the
+    # stlib_generated.jl include; here we wire them into F and extend ARITY). The
+    # stdlib arity table is a superset of the kernel's, so merging it is idempotent.
+    # SHEN_SKIP_BAKED_STLIB=1 lets bin/gen_stlib.jl boot kernel-only and (re)load
+    # StLib from source cleanly, instead of stacking a source load on top of an
+    # already-baked stdlib.
+    if isdefined(Prims, :HAS_BAKED_STLIB) && getfield(Prims, :HAS_BAKED_STLIB) &&
+       get(ENV, "SHEN_SKIP_BAKED_STLIB", "") != "1"
+        isfile(STLIB_ARITY_PATH) && merge!(Compiler.ARITY, Serialization.deserialize(STLIB_ARITY_PATH))
+        Base.invokelatest(getfield(Prims, :_register_baked_stlib!))
+    end
     verbose && println(stderr, "  loaded(baked) $(length(Prims.F)) functions")
 end
 

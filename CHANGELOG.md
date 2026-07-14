@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/)
 
 ## [Unreleased]
 
+### Added (kernel/stlib-from-source)
+- **Standard library**, sourced from Tarver's `Lib/StLib` (vendored under
+  `lib/stlib/`; canonical mirror `pyrex41/shen-upstream` tag
+  `s41.2-pristine-20260711`). The S41.2 refresh ships the stdlib as Shen *source*
+  (the community kernel shipped a pre-compiled `stlib.kl`); a from-source load is
+  ~50 s, so `bin/gen_stlib.jl` compiles it once and bakes 316 functions into
+  `src/stlib_generated.jl`, loaded at boot at ~no cost. `filter`, `take`, `reduce`,
+  the maths/string/vector/symbol/tuple helpers, etc. are now available at the REPL
+  (`(filter …)`, `(fn filter)` both resolve). `_register_baked_stlib!` also
+  registers the stdlib arities in the kernel `*property-vector*` so
+  function-reference/higher-order use works. Datatype recognisers (`name#type`)
+  are deliberately NOT baked — upstream precludes StLib's datatypes, and baking a
+  recogniser shadows a user datatype of the same name (see kerneltests `c-minus`,
+  which declares its own `print` type).
+
 ### Changed (kernel/tarver-s41-refresh)
 - Vendored kernel updated to **Mark Tarver's S41.2 (2026-07-11 refresh)** — a
   restructured kernel that reuses the "41.2" version string but is a different
