@@ -56,7 +56,7 @@ Boot order (from `sources/make.shen`):
 
 - `extension-launcher.kl` — community launcher extension providing
   `shen.x.launcher.main` (the `eval` / `script` / `--version` CLI). NOT part of
-  Tarver's distribution, but shen-julia's `bin/shen` and the Ratatoskr stage-1
+  Tarver's distribution, but shen-julia's `bin/shen` and the Yggdrasil stage-1
   driver depend on it, so it is retained. Self-contained; verified to reference
   no removed kernel function except `shen.repl` on the interactive `launch-repl`
   path (which shen-julia handles host-side in `bin/shen.jl`, so it is not hit by

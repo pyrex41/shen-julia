@@ -147,8 +147,8 @@ you want the program’s *own* functions precompiled too (tightest startup, e.g.
 CLI tool invoked repeatedly).
 
 For an even more self-contained artifact (a tree-shaken kernel slice + your
-program, optionally as its own sysimage), see the Ratatoskr builder
-`bin/ratatoskr-build.jl`.
+program, optionally as its own sysimage), see the Yggdrasil builder
+`bin/yggdrasil-build.jl`.
 
 ---
 
@@ -209,7 +209,7 @@ Repository layout:
 | `lib/stlib/` | Vendored Shen standard library (Tarver `Lib/StLib`; see `lib/stlib/PROVENANCE.md`) |
 | `bin/build_sysimage.jl` | Base sysimage builder (honours `SHEN_SYSIMAGE_CPU_TARGET`) |
 | `bin/build_app_sysimage.jl` | Bake a user `.shen` into its own sysimage |
-| `bin/ratatoskr-build.jl` | Ratatoskr stage-2 standalone-artifact builder |
+| `bin/yggdrasil-build.jl` | Yggdrasil stage-2 standalone-artifact builder |
 | `bin/run_canonical.jl` | Run the official kerneltests harness (134/134) |
 | `klambda/` | Vendored Shen kernel sources (Tarver S41.2 2026-07-11 refresh; see `klambda/PROVENANCE.md`) |
 | `tests/` | Official Shen test suite + sample programs |
