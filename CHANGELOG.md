@@ -59,8 +59,8 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/)
 - `bin/build_app_sysimage.jl` — bake a user program into a fast-start sysimage.
 - `bin/run_canonical.jl` — run the official kerneltests harness.
 - GitHub Actions workflow to build + publish per-platform release sysimages.
-- Integration as a first-class port in bifrost and ratatoskr (stage-1 + stage-2
-  builder `bin/ratatoskr-build.jl`).
+- Integration as a first-class port in bifrost and yggdrasil (stage-1 + stage-2
+  builder `bin/yggdrasil-build.jl`).
 
 ### Changed
 - Upgraded the vendored kernel from **41.1 to 41.2**.

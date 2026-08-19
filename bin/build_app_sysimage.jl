@@ -20,7 +20,7 @@
 #     well under a second.
 #   * For a fully self-contained artifact where your program's OWN functions are
 #     also baked (and the kernel is tree-shaken to just what you use), use the
-#     Ratatoskr pipeline + bin/ratatoskr-build.jl instead.
+#     Yggdrasil pipeline + bin/yggdrasil-build.jl instead.
 #
 # The sysimage is tied to this machine's OS/CPU and Julia version (see README).
 

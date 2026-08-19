@@ -1,6 +1,6 @@
 #!/bin/sh
 # Shen/Julia launcher wrapper: a single executable entry point (for bifrost /
-# ratatoskr / users) that invokes the Julia CLI with this project activated.
+# yggdrasil / users) that invokes the Julia CLI with this project activated.
 #
 # Set SHEN_JULIA_SYSIMAGE=/path/to/ShenJulia.sys to boot from a prebuilt
 # sysimage (much faster startup). Build one with: julia --project=. bin/build_sysimage.jl
