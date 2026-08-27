@@ -764,7 +764,7 @@ let _ = force, _ = Compiler, _ = setfn!, _ = APP, _ = PARTIAL, _ = BIND, _ = MKT
 end
 
 # --- Baked kernel (fast boot) ---------------------------------------------
-# bin/gen_kernel.jl compiles the whole 41.2 kernel ahead of time into
+# bin/gen_kernel.jl compiles the whole Shen 42.0 kernel ahead of time into
 # kernel_generated.jl: top-level `function K_...` methods (so PRECOMPILATION
 # bakes them — no per-startup Core.eval/JIT of ~1138 functions) plus
 # `_register_baked_kernel!()` which wires them into F/ARITY at boot. Every name
@@ -774,7 +774,7 @@ end
 # NOTE: Julia does not track an isfile() result as a precompile dependency, so if
 # you (re)generate kernel_generated.jl you must force a recompile of this module
 # (a content change here, or `Base.compilecache`), or the stale image silently
-# keeps HAS_BAKED_KERNEL=false. [baked-kernel guard v6 — S41.2 refresh + world-age demod fix]
+# keeps HAS_BAKED_KERNEL=false. [baked-kernel guard v7 — Shen 42.0]
 if isfile(joinpath(@__DIR__, "kernel_generated.jl"))
     include(joinpath(@__DIR__, "kernel_generated.jl"))
     const HAS_BAKED_KERNEL = true
@@ -791,7 +791,7 @@ end
 # (kernel-only) before StLib has been generated — that is exactly the state gen_stlib
 # itself runs in. Same isfile()-not-a-precompile-dep caveat as the kernel guard above:
 # after (re)generating stlib_generated.jl, bump this marker to force a recompile.
-# [baked-stlib guard v5 — Tarver Lib/StLib, 316 fns, recognisers excluded]
+# [baked-stlib guard v6 — Tarver S42 Lib/StLib, recognisers excluded]
 if isfile(joinpath(@__DIR__, "stlib_generated.jl"))
     include(joinpath(@__DIR__, "stlib_generated.jl"))
     const HAS_BAKED_STLIB = true

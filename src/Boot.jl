@@ -1,4 +1,4 @@
-# Boot: load Mark Tarver's S41.2 (2026-07-11 refresh) KLambda kernel.
+# Boot: load Mark Tarver's Shen 42.0 (S42, 2026-08-25) KLambda kernel.
 #
 # This kernel has NO shen.initialise: initialisation is performed by the kernel's
 # own top-level forms (declarations.kl builds the property/arity/lambda tables;
@@ -41,8 +41,8 @@ function find_kldir()
     end
 
     candidates = [
-        "../cl-source/ShenOSKernel-41.2/klambda",
-        "../ShenOSKernel-41.2/klambda",
+        "../cl-source/ShenOSKernel-42.0/klambda",
+        "../ShenOSKernel-42.0/klambda",
         joinpath(@__DIR__, "..", "klambda"),
     ]
     for c in candidates
