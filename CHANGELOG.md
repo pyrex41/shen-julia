@@ -721,3 +721,8 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/)
 [17.2]: https://github.com/Shen-Language/shen-sources/compare/shen-17.1...shen-17.2
 [17.1]: https://github.com/Shen-Language/shen-sources/compare/shen-17...shen-17.1
 [17]: https://github.com/Shen-Language/shen-sources/commit/bd5379837b7c8e94509879430dea7ff3067b6079
+## Unreleased
+
+- Upgraded the vendored kernel, standard library, and canonical test corpus to
+  Mark Tarver's Shen 42.0 (S42, 2026-08-25; runtime `(version)` is `"42"`).
+- Regenerated the baked Julia kernel and StLib artifacts from the S42 sources.

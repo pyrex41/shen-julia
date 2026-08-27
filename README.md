@@ -1,11 +1,10 @@
 # Shen/Julia
 
-A [Julia](https://julialang.org) port of the **Shen 41.2** language kernel.
+A [Julia](https://julialang.org) port of the **Shen 42.0** language kernel.
 
 > **Kernel lineage:** as of the `kernel/tarver-s41-refresh` work this vendors Mark
-> Tarver's **S41.2 (2026-07-11 refresh)** — a restructured kernel that reuses the
-> "41.2" version string but is a different lineage from the community
-> `ShenOSKernel-41.2`. `(version)` still reports `"41.2"`. Details, provenance and
+> Tarver's **Shen 42.0 (S42, 2026-08-25)** release. `(version)` reports `"42"`.
+> Details, provenance and
 > the delta are in [`klambda/PROVENANCE.md`](klambda/PROVENANCE.md).
 
 Shen programs compile to native Julia methods (one `K_<name>` method per Shen
@@ -54,7 +53,7 @@ your `PATH` or call it directly.
 # Interactive REPL (Ctrl-D / EOF exits cleanly)
 ./bin/shen
 
-# Version banner (contains 41.2)
+# Version banner (contains 42)
 ./bin/shen --version
 ```
 
@@ -154,7 +153,7 @@ program, optionally as its own sysimage), see the Yggdrasil builder
 
 ## Status
 
-- **Kernel:** Shen **41.2** (`(version)` reports `"41.2"`).
+- **Kernel:** Shen **42.0** (`(version)` reports `"42"`).
 - **Tests:** official `tests/kerneltests.shen` passes **134/134** via
   `julia --project=. bin/run_canonical.jl` (loads `harness.shen` +
   `kerneltests.shen` exactly as upstream does).

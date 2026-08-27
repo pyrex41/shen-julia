@@ -9,7 +9,7 @@
 #   shen eval -e "(+ 40 2)"     -> prints the value of the expression + newline
 #   shen eval -l prog.shen -e EXPR
 #   shen script prog.shen       -> quiet-loads + runs prog.shen (no defun echo)
-#   shen --version              -> "<version> port ..." banner (contains 41.2)
+#   shen --version              -> "<version> port ..." banner (contains 42)
 #   shen                        -> interactive REPL
 #   shen --boot-only            -> boot the kernel, print version, exit (timing aid)
 #
