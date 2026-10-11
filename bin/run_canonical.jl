@@ -13,5 +13,6 @@ cd("tests") do
         Prims.force(Base.invokelatest(F["load"], "kerneltests.shen"))
     end
 end
-println("passed = ", get(G, "test-harness.*passed*", get(G, "*passed*", "?")))
-println("failed = ", get(G, "test-harness.*failed*", get(G, "*failed*", "?")))
+# kerneltests.shen ends with (reset), which zeroes the counters, so the
+# authoritative result is the harness's own "passed ... N / failed ... M" report
+# printed above (143/0 on ShenOSKernel 42.2).

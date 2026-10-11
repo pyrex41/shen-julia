@@ -1,16 +1,18 @@
 # Shen/Julia
 
-A [Julia](https://julialang.org) port of the **Shen 42.0** language kernel.
+A [Julia](https://julialang.org) port of the Shen language, on the community
+**ShenOSKernel 42.2** kernel (the one shen-scheme 0.50 ships).
 
-> **Kernel lineage:** as of the `kernel/tarver-s41-refresh` work this vendors Mark
-> Tarver's **Shen 42.0 (S42, 2026-08-25)** release. `(version)` reports `"42"`.
-> Details, provenance and
-> the delta are in [`klambda/PROVENANCE.md`](klambda/PROVENANCE.md).
+> **Kernel lineage:** this vendors **ShenOSKernel 42.2** from
+> [`Shen-Language/shen-sources`](https://github.com/Shen-Language/shen-sources)
+> (tag `shen-42.2`) byte-for-byte, replacing the Tarver S42.0 lineage used until
+> 2026-10. `(version)` reports `"42.2"`. Provenance, SHA-256 and the lineage
+> choice are in [`klambda/PROVENANCE.md`](klambda/PROVENANCE.md).
 
 Shen programs compile to native Julia methods (one `K_<name>` method per Shen
 function), so once warmed up this port runs compute-bound code **6–16× faster
 than the reference SBCL port** (`shen-cl`) and passes the full official kernel
-test suite **134/134**.
+test suite **143/143**.
 
 > **Heads-up about startup:** Julia compiles to native code *on first use*, so a
 > from-source start spends ~10 s booting the kernel and the *first* call into the
@@ -53,7 +55,7 @@ your `PATH` or call it directly.
 # Interactive REPL (Ctrl-D / EOF exits cleanly)
 ./bin/shen
 
-# Version banner (contains 42)
+# Version banner (contains 42.2)
 ./bin/shen --version
 ```
 
@@ -153,8 +155,9 @@ program, optionally as its own sysimage), see the Yggdrasil builder
 
 ## Status
 
-- **Kernel:** Shen **42.0** (`(version)` reports `"42"`).
-- **Tests:** official `tests/kerneltests.shen` passes **134/134** via
+- **Kernel:** ShenOSKernel **42.2** (`(version)` reports `"42.2"`), with the
+  precompiled standard library (`klambda/stlib.kl`) loaded.
+- **Tests:** official `tests/kerneltests.shen` passes **143/143** via
   `julia --project=. bin/run_canonical.jl` (loads `harness.shen` +
   `kerneltests.shen` exactly as upstream does).
 - **Performance** (vs `shen-cl`/SBCL, the reference; per-trial median):
@@ -181,15 +184,17 @@ julia --project=. bin/gen_kernel.jl    # regenerate src/kernel_generated.jl + ke
 julia --project=. bin/build_sysimage.jl
 ```
 
-The **standard library** (Tarver's `Lib/StLib`, vendored under `lib/stlib/`) is
-baked the same way — it ships as Shen *source*, so a from-source load costs ~50 s;
-`bin/gen_stlib.jl` compiles it once into `src/stlib_generated.jl` (loaded at boot at
-~no cost). After changing `lib/stlib/**` regenerate it and bump the
-`[baked-stlib guard vN]` marker in `src/Prims.jl`:
+The **standard library** is the kernel's precompiled `klambda/stlib.kl`; it is
+baked together with the kernel by `bin/gen_kernel.jl` and initialised at boot by
+`stlib.initialise` (`lib/stlib/` holds the matching 42.2 sources, for reference).
 
-```bash
-julia --project=. bin/gen_stlib.jl     # regenerate src/stlib_generated.jl + kernel_stlib_arity.jls
-```
+The package also runs a small **precompile workload** (end of `src/ShenJulia.jl`):
+it boots the kernel once while Julia precompiles the package, so the native code
+for `shen.initialise`, `stlib.initialise` and the common eval/print paths is
+cached in the package image, then restores every runtime table. Without it a
+from-source start spends ~40 s JIT-compiling the 42.2 initialisation code; with
+it a start without a sysimage takes ~5 s. Set `SHEN_JULIA_NO_WORKLOAD=1` before
+the package is compiled to skip it.
 
 Repository layout:
 
@@ -199,18 +204,16 @@ Repository layout:
 | `src/Runtime.jl` | Symbols, `NIL`/`Cons`/`AbsVector`, streams, KL reader |
 | `src/Compiler.jl` | KL → Julia codegen; `INLINE_PRIM` hot-path inlines |
 | `src/Prims.jl` | Host primitives, `APP`/`PARTIAL`, `eval_kl`, baked-kernel include |
-| `src/Boot.jl` | Kernel load (baked fast path + source fallback), `shen.initialise` |
-| `src/kernel_generated.jl` | **auto-generated** baked 41.2 kernel (do not edit) |
-| `src/stlib_generated.jl` | **auto-generated** baked standard library (do not edit) |
+| `src/Boot.jl` | Kernel load (baked fast path + source fallback), `shen.initialise` + `stlib.initialise` |
+| `src/kernel_generated.jl` | **auto-generated** baked ShenOSKernel 42.2 + StLib (do not edit) |
 | `bin/shen`, `bin/shen.jl` | CLI launcher |
 | `bin/gen_kernel.jl` | Ahead-of-time kernel generator |
-| `bin/gen_stlib.jl` | Ahead-of-time standard-library generator (from `lib/stlib/`) |
-| `lib/stlib/` | Vendored Shen standard library (Tarver `Lib/StLib`; see `lib/stlib/PROVENANCE.md`) |
+| `lib/` | Vendored ShenOSKernel 42.2 libraries (`lib/stlib/` = sources of `klambda/stlib.kl`) |
 | `bin/build_sysimage.jl` | Base sysimage builder (honours `SHEN_SYSIMAGE_CPU_TARGET`) |
 | `bin/build_app_sysimage.jl` | Bake a user `.shen` into its own sysimage |
 | `bin/yggdrasil-build.jl` | Yggdrasil stage-2 standalone-artifact builder |
-| `bin/run_canonical.jl` | Run the official kerneltests harness (134/134) |
-| `klambda/` | Vendored Shen kernel sources (Tarver S41.2 2026-07-11 refresh; see `klambda/PROVENANCE.md`) |
+| `bin/run_canonical.jl` | Run the official kerneltests harness (143/143) |
+| `klambda/` | Vendored ShenOSKernel 42.2 KLambda (see `klambda/PROVENANCE.md`) |
 | `tests/` | Official Shen test suite + sample programs |
 
 ---

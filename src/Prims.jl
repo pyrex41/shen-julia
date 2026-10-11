@@ -507,9 +507,6 @@ defprim("read-byte", 1, function(st)
         st.eof = true
         b = -1
     end
-    if (b === -1) && (st === get(GLOBALS, "*stinput*", nothing) || (hasproperty(st, :name) && occursin("input", lowercase(string(st.name)))))
-        println(stderr, "[READ-BYTE DEBUG] hit -1 on *stinput* or input stream (this will cause empty-stream in read-loop if no bytes accumulated yet)")
-    end
     return b
 end)
 
@@ -584,8 +581,8 @@ end
 # These host versions are behaviour-conformant drop-in replacements that walk the Cons
 # spine in a tight loop instead. Bonus: `append` here is iterative, whereas the kernel's
 # `append` is NOT tail-recursive and overflows the stack on long lists.
-# install_fast_builtins!() swaps them into F after boot (so they override the KL defs);
-# the originals are stashed in SLOW_BUILTINS for A/B benchmarking.
+# They are installed as the only K_<name> methods (see NATIVE_IMPLS below);
+# SLOW_BUILTINS is kept (empty) for old A/B benchmark scripts.
 # ---------------------------------------------------------------------------
 const SLOW_BUILTINS = Dict{String, Function}()
 
@@ -648,53 +645,56 @@ function kl_map_fast(f, a, origmap)
     return acc
 end
 
-function _override_builtin!(nm::String, ar::Int, fn::Function)
-    haskey(F, nm) || return  # only replace what the kernel actually defined
-    SLOW_BUILTINS[nm] = F[nm]
-    setfn!(nm, fn, ar)       # dynamic table + arity
-    define_named!(nm, ar, fn) # redefine K_<nm> so compiled callers use the fast version
-end
-
-# Which builtins to override is an empirical, per-function decision (see bin/bench_builtins.jl):
-#   reverse  -> 5.7x faster, identical semantics                       [install]
-#   length   -> ~1.35x faster, identical semantics                     [install]
-#   append   -> ~1.4x SLOWER, but stack-safe (kernel append is non-
-#               tail-recursive and overflows on very long lists)       [install for safety]
-#   map      -> slower AND changes semantics (kernel leaves per-element
-#               results as unforced Bounces); NOT overridden.
-# kl_map_fast/kl_map are kept available for callers that want a forced, host-side map.
-function install_fast_builtins!()
-    _override_builtin!("reverse", 1, kl_reverse)
-    _override_builtin!("length", 1, kl_length)
-    _override_builtin!("append", 2, kl_append)
-    install_hush_fix!()
-    return nothing
-end
-
 # Override `pr` so *hush* gates ONLY the standard output stream, never an explicit
-# file stream. The 41.2 kernel `pr` does `(if (value *hush*) STR ...)`, which silences
+# file stream. The kernel `pr` does `(if (value *hush*) STR ...)`, which silences
 # EVERY stream under -q. The other ports converged on the opposite (shen-cl via a
 # native pr override; shen-lua/shen-rust via fix/hush-pr-file): -q hushes chatter to
 # stdout, but `pr` to a real file stream always writes. Match that so shen-julia agrees
 # on bifrost's hardened hush-file-write case. Compares stream identity to *stoutput*
-# (host ===), avoiding any KL stream-equality semantics.
-function install_hush_fix!()
-    haskey(F, "pr") || return
-    cso = get(F, "shen.char-stoutput?", nothing)
-    sws = get(F, "shen.write-string", nothing)
-    swc = get(F, "shen.write-chars", nothing)
-    s2b = get(F, "shen.string->byte", nothing)
-    (swc === nothing || s2b === nothing) && return  # kernel not as expected; leave pr alone
-    pr = function(str, stream)
-        if get(GLOBALS, "*hush*", false) === true && stream === get(GLOBALS, "*stoutput*", nothing)
-            return str
-        end
-        if sws !== nothing && cso !== nothing && Base.invokelatest(cso, stream) === true
-            return Base.invokelatest(sws, str, stream)
-        end
-        return Base.invokelatest(swc, str, stream, Base.invokelatest(s2b, str, 0), 1)
+# (host ===), avoiding any KL stream-equality semantics. Otherwise identical to the
+# 42.2 kernel `pr` (writer.kl); the helpers are looked up at call time so drivers
+# that redefine shen.char-stoutput? are honoured.
+function kl_pr(str, stream)
+    if get(GLOBALS, "*hush*", false) === true && stream === get(GLOBALS, "*stoutput*", nothing)
+        return str
     end
-    _override_builtin!("pr", 2, pr)
+    cso = get(F, "shen.char-stoutput?", nothing)
+    if cso !== nothing && Base.invokelatest(cso, stream) === true
+        return Base.invokelatest(F["shen.write-string"], str, stream)
+    end
+    return Base.invokelatest(F["shen.write-chars"], str, stream,
+                             Base.invokelatest(F["shen.string->byte"], str, 0), 1)
+end
+
+# Which builtins to override is an empirical, per-function decision (see bin/bench_builtins.jl):
+#   reverse  -> 5.7x faster, identical semantics                       [native]
+#   length   -> ~1.35x faster, identical semantics                     [native]
+#   append   -> ~1.4x SLOWER, but stack-safe (kernel append is non-
+#               tail-recursive and overflows on very long lists)       [native for safety]
+#   pr       -> *hush* gates stdout only (see kl_pr)                   [native]
+#   map      -> slower AND changes semantics; NOT overridden.
+# kl_map_fast/kl_map are kept available for callers that want a forced, host-side map.
+# The names must match Compiler.NATIVE_OVERRIDES (the generators skip those KL
+# defuns, so the natives are the only `K_<name>` methods: defined here at module
+# load, before the baked kernel, and never overwritten at runtime).
+const NATIVE_IMPLS = Dict{String,Tuple{Int,Function}}(
+    "reverse" => (1, kl_reverse),
+    "length"  => (1, kl_length),
+    "append"  => (2, kl_append),
+    "pr"      => (2, kl_pr),
+)
+@assert Set(keys(NATIVE_IMPLS)) == Compiler.NATIVE_OVERRIDES
+for (nm, (ar, fn)) in NATIVE_IMPLS
+    setfn!(nm, fn, ar)
+    define_named!(nm, ar, fn)
+end
+
+# Kept for API compatibility (boot! calls it): the natives are installed at module
+# load now, so this only re-asserts their F entries (a driver may have replaced one).
+function install_fast_builtins!()
+    for (nm, (ar, fn)) in NATIVE_IMPLS
+        F[nm] isa ShenFn && F[nm].fn === fn || setfn!(nm, fn, ar)
+    end
     return nothing
 end
 
@@ -707,9 +707,9 @@ const KDATA = Compiler.KDATA
 # (MKTREE fn already binds the name; _MKTREE alias above for any legacy emit.)
 
 # When non-nothing, every KL `(defun …)` form eval_kl compiles is also recorded here
-# (in order). bin/gen_stlib.jl sets this, runs a gen-time `(load "install.shen")` to
-# compile Tarver's Lib/StLib, and re-emits the recorded forms through the same
-# cdefun_parts path gen_kernel uses — so the stdlib bakes exactly like the kernel.
+# (in order). A debugging/baking hook: a generator can set it, load Shen source,
+# and re-emit the recorded forms through Compiler.cdefun_parts (the path
+# bin/gen_kernel.jl uses). Unused at runtime.
 const DEFUN_RECORDER = Ref{Union{Nothing,Vector{Any}}}(nothing)
 
 function compile_and_load!(src::String, chunkname::String)
@@ -764,7 +764,7 @@ let _ = force, _ = Compiler, _ = setfn!, _ = APP, _ = PARTIAL, _ = BIND, _ = MKT
 end
 
 # --- Baked kernel (fast boot) ---------------------------------------------
-# bin/gen_kernel.jl compiles the whole Shen 42.0 kernel ahead of time into
+# bin/gen_kernel.jl compiles the whole ShenOSKernel 42.2 kernel (and its precompiled StLib) ahead of time into
 # kernel_generated.jl: top-level `function K_...` methods (so PRECOMPILATION
 # bakes them — no per-startup Core.eval/JIT of ~1138 functions) plus
 # `_register_baked_kernel!()` which wires them into F/ARITY at boot. Every name
@@ -774,30 +774,13 @@ end
 # NOTE: Julia does not track an isfile() result as a precompile dependency, so if
 # you (re)generate kernel_generated.jl you must force a recompile of this module
 # (a content change here, or `Base.compilecache`), or the stale image silently
-# keeps HAS_BAKED_KERNEL=false. [baked-kernel guard v7 — Shen 42.0]
+# keeps HAS_BAKED_KERNEL=false. [baked-kernel guard v8 — ShenOSKernel 42.2, StLib from klambda/stlib.kl]
 if isfile(joinpath(@__DIR__, "kernel_generated.jl"))
     include(joinpath(@__DIR__, "kernel_generated.jl"))
     const HAS_BAKED_KERNEL = true
 else
     const HAS_BAKED_KERNEL = false
     _register_baked_kernel!() = error("baked kernel not generated — run: julia --project=. bin/gen_kernel.jl")
-end
-
-# Baked StLib (bin/gen_stlib.jl): the Shen standard library (Tarver Lib/StLib),
-# compiled ahead of time into stlib_generated.jl exactly like the kernel — top-level
-# K_ methods baked by precompilation + `_register_baked_stlib!()` run at boot AFTER
-# the kernel's own registration (so a stdlib defun that shadows a kernel one wins, as
-# it would under a source `(load "install.shen")`). Guarded so the port still boots
-# (kernel-only) before StLib has been generated — that is exactly the state gen_stlib
-# itself runs in. Same isfile()-not-a-precompile-dep caveat as the kernel guard above:
-# after (re)generating stlib_generated.jl, bump this marker to force a recompile.
-# [baked-stlib guard v6 — Tarver S42 Lib/StLib, recognisers excluded]
-if isfile(joinpath(@__DIR__, "stlib_generated.jl"))
-    include(joinpath(@__DIR__, "stlib_generated.jl"))
-    const HAS_BAKED_STLIB = true
-else
-    const HAS_BAKED_STLIB = false
-    _register_baked_stlib!() = nothing
 end
 
 end # module Prims
