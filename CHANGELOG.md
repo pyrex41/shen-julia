@@ -6,6 +6,34 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/)
 
 ## [Unreleased]
 
+### Changed (kernel-42.2)
+- **Kernel: ShenOSKernel 42.2, adopted wholesale** (option (a) of #10). The
+  community release from `Shen-Language/shen-sources` tag `shen-42.2` (commit
+  `73507e06`, `ShenOSKernel-42.2.tar.gz` SHA-256 `1d022730…678d8`, the kernel
+  shen-scheme 0.50 ships) replaces Tarver's S42.0. `klambda/`, `sources/`,
+  `tests/`, `lib/`, `doc/`, `extensions/` and `assets/` are byte-for-byte copies of
+  the release. `(version)` now reports `"42.2"`. See `klambda/PROVENANCE.md`.
+- **Boot** (`src/Boot.jl`): loads the 20 community modules (adds `dict`, `init`,
+  `extension-features`, `extension-expand-dynamic`, `stlib`; drops `backend`) and
+  runs `shen.initialise`, `shen.x.features.initialise [shen/julia]` and
+  `stlib.initialise`. Every 42.2 file is defuns only, so load order no longer
+  matters. `*property-vector*` is a `shen.dict`; no shen-julia native reads it.
+- **StLib from `klambda/stlib.kl`.** The precompiled standard library is baked with
+  the kernel by `bin/gen_kernel.jl`. `bin/gen_stlib.jl`, `src/stlib_generated.jl` and
+  `kernel_stlib_arity.jls` (Tarver Lib/StLib compiled from source) are removed.
+- **Native overrides are installed at module load.** `reverse`/`length`/`append`/`pr`
+  (`Compiler.NATIVE_OVERRIDES`, `Prims.NATIVE_IMPLS`) are no longer swapped in after
+  boot; the generators skip their KL defuns and Prims defines the only `K_<name>`
+  methods. `install_fast_builtins!` remains as a compatibility no-op.
+- **Precompile workload** (`src/ShenJulia.jl`): the package boots the kernel once
+  while it is precompiled, so native code for the large 42.2 initialisation
+  functions is cached; the runtime tables are restored afterwards. A start without a
+  sysimage goes from ~60 s (JIT of `shen.initialise`/`stlib.initialise`) to ~5 s.
+  `SHEN_JULIA_NO_WORKLOAD=1` (at compile time) skips it.
+- Removed a leftover `[READ-BYTE DEBUG]` message the `read-byte` primitive printed to
+  stderr at end of standard input.
+- **Tests:** official kernel suite **143/143** (`bin/run_canonical.jl`).
+
 ### Added (kernel/stlib-from-source)
 - **Standard library**, sourced from Tarver's `Lib/StLib` (vendored under
   `lib/stlib/`; canonical mirror `pyrex41/shen-upstream` tag

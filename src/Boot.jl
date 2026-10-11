@@ -1,9 +1,10 @@
-# Boot: load Mark Tarver's Shen 42.0 (S42, 2026-08-25) KLambda kernel.
+# Boot: load the community ShenOSKernel 42.2 KLambda kernel and run its
+# initialisation (shen.initialise, the features extension, stlib.initialise).
 #
-# This kernel has NO shen.initialise: initialisation is performed by the kernel's
-# own top-level forms (declarations.kl builds the property/arity/lambda tables;
-# types.kl runs 161 declares), which the baked registrar / source loader run at
-# load time. See klambda/PROVENANCE.md.
+# Every 42.2 .kl file contains only defuns, so load order is irrelevant: the
+# baked registrar / source loader registers them all, and state (globals, the
+# shen.dict-based *property-vector*, arities, lambda forms, *macros*, …) is
+# built afterwards by initialise!. See klambda/PROVENANCE.md.
 
 module Boot
 
@@ -18,19 +19,23 @@ using Serialization
 
 export load_kernel!, initialise!, run_kl_string, find_kldir, precompile_kernel_to_file!
 
-# Upstream boot order (sources/make.shen) is:
-#   yacc core load prolog reader sequent sys t-star toplevel track types
-#   writer backend declarations   then   macros
-# We move `declarations` BEFORE `types` because the baked/source loader runs all
-# defuns first and only then the top-level forms in file order: `declarations`
-# creates *property-vector* + the arity table, which the 161 top-level (declare)
-# forms in `types` require. `extension-launcher` (community add-on, not in
-# Tarver's distribution) is appended last for the eval/script/--version CLI.
+# Load order follows shen-cl / the community install order. With 42.2 nothing
+# here runs at load time (all forms are defuns), so the order only matters for
+# last-wins duplicate names. `stlib` is the precompiled standard library
+# (klambda/stlib.kl), initialised by `stlib.initialise` after the kernel.
+# The experimental `namespaces`, `type-annotations` and
+# `programmable-pattern-matching` extensions are vendored but not loaded (the
+# same set shen-cl's kernel-42.2 boot loads).
 const KERNEL_FILES = [
-    "yacc", "core", "load", "prolog", "reader", "sequent", "sys", "t-star",
-    "toplevel", "track", "writer", "backend", "declarations", "types", "macros",
-    "extension-launcher",
+    "toplevel", "core", "sys", "dict", "sequent", "yacc", "reader", "prolog",
+    "track", "load", "writer", "macros", "declarations", "types", "t-star", "init",
+    "extension-features", "extension-expand-dynamic", "extension-launcher",
+    "stlib",
 ]
+
+# Feature symbols registered through shen.x.features.initialise (the 42.2
+# features extension); `shen/julia` mirrors shen-cl's `shen/cl`.
+const PORT_FEATURES = ["shen/julia"]
 
 function find_kldir()
     env = get(ENV, "SHEN_KL_DIR", "")
@@ -41,8 +46,7 @@ function find_kldir()
     end
 
     candidates = [
-        "../cl-source/ShenOSKernel-42.0/klambda",
-        "../ShenOSKernel-42.0/klambda",
+        "../ShenOSKernel-42.2/klambda",
         joinpath(@__DIR__, "..", "klambda"),
     ]
     for c in candidates
@@ -131,21 +135,32 @@ function load_kernel!(verbose::Bool=false)
     end
 end
 
+# Call a kernel function by name if it is defined (a Yggdrasil-shaken slice may
+# not carry the features extension or the standard library).
+function _call_if_defined(name::String, args...)
+    fn = get(Prims.F, name, nothing)
+    fn === nothing && return false
+    Base.invokelatest(fn, args...)
+    return true
+end
+
 function initialise!()
-    # Tarver's S41.2 refresh has no shen.initialise — the kernel's top-level forms
-    # (declarations.kl / types.kl) already ran during load_kernel! and populated
-    # *property-vector*, the arity/lambda tables, *macros*, the globals, etc. This
-    # step is kept only for backward compatibility with community kernels that DO
-    # define shen.initialise; on the refresh it is a no-op.
-    fn = get(Prims.F, "shen.initialise", nothing)
-    if fn !== nothing
-        Prims.reset_max_frame_depth!()
-        try
-            Base.invokelatest(fn)
-        catch e
-            println(stderr, "  [init] shen.initialise threw (", typeof(e), ")")
+    # ShenOSKernel 42.2: shen.initialise builds the environment (globals,
+    # *property-vector* as a shen.dict, *macros*, …), the lambda forms and the
+    # signed-function table. Then the port registers its features (as shen-cl
+    # does) and initialises the precompiled StLib (doc/port-upgrades.md, 41.1:
+    # "load it after the kernel and call stlib.initialise").
+    Prims.reset_max_frame_depth!()
+    _call_if_defined("shen.initialise") ||
+        error("shen.initialise not defined after kernel load")
+    if haskey(Prims.F, "shen.x.features.initialise")
+        feats = Runtime.NIL
+        for f in Iterators.reverse(PORT_FEATURES)
+            feats = Runtime.cons(Runtime.intern(f), feats)
         end
+        _call_if_defined("shen.x.features.initialise", feats)
     end
+    _call_if_defined("stlib.initialise")
     return nothing
 end
 
@@ -180,7 +195,6 @@ end
 
 const KERNEL_ARITY_PATH = joinpath(dirname(@__DIR__), "kernel_arity.jls")
 const KERNEL_KDATA_PATH = joinpath(dirname(@__DIR__), "kernel_kdata.jls")
-const STLIB_ARITY_PATH  = joinpath(dirname(@__DIR__), "kernel_stlib_arity.jls")
 
 function load_kernel_baked!(verbose::Bool=false)
     # Restore the literal table the baked methods index (KDATA) and the defun arity
@@ -194,17 +208,6 @@ function load_kernel_baked!(verbose::Bool=false)
         merge!(Compiler.ARITY, Serialization.deserialize(KERNEL_ARITY_PATH))
     end
     Base.invokelatest(getfield(Prims, :_register_baked_kernel!))
-    # Register the baked StLib on top of the kernel (methods already baked by the
-    # stlib_generated.jl include; here we wire them into F and extend ARITY). The
-    # stdlib arity table is a superset of the kernel's, so merging it is idempotent.
-    # SHEN_SKIP_BAKED_STLIB=1 lets bin/gen_stlib.jl boot kernel-only and (re)load
-    # StLib from source cleanly, instead of stacking a source load on top of an
-    # already-baked stdlib.
-    if isdefined(Prims, :HAS_BAKED_STLIB) && getfield(Prims, :HAS_BAKED_STLIB) &&
-       get(ENV, "SHEN_SKIP_BAKED_STLIB", "") != "1"
-        isfile(STLIB_ARITY_PATH) && merge!(Compiler.ARITY, Serialization.deserialize(STLIB_ARITY_PATH))
-        Base.invokelatest(getfield(Prims, :_register_baked_stlib!))
-    end
     verbose && println(stderr, "  loaded(baked) $(length(Prims.F)) functions")
 end
 

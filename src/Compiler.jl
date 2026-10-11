@@ -49,7 +49,17 @@ const INLINE_PRIM = Dict{String, String}(
 # fail type checking. Emitting these calls through `Base.invokelatest` forces
 # latest-world dispatch, matching ports without a world-age model. Kept tiny: only
 # functions the kernel eval-redefines mid-run belong here (grep `(eval (cons define`).
+# (ShenOSKernel 42.2's shen.demod reads shen.*demodulation-function* instead of
+# being redefined, so this is now belt-and-braces.)
 const WORLD_AGE_SENSITIVE = Set{String}(["shen.demod"])
+
+# Kernel functions replaced by host-native implementations in Prims.jl
+# ("overwrite" peephole builtins). Their KL defuns are NOT baked by
+# bin/gen_kernel.jl / bin/yggdrasil-build.jl: Prims defines `K_<name>` itself at
+# module load, so the natives are in place before any kernel method is compiled
+# (no runtime method overwrite, which would also be illegal while the package
+# precompile workload runs). See Prims.NATIVE_IMPLS.
+const NATIVE_OVERRIDES = Set{String}(["reverse", "length", "append", "pr"])
 
 car(x::Cons) = x.h
 cdr(x::Cons) = x.t
