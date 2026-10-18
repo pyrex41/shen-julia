@@ -68,6 +68,16 @@ println("\n=== Smoke tests ===")
 @assert equal(cons(intern("a"), NIL), cons(intern("a"), NIL))
 println("  primitives: ok")
 
+# Numeric contract regressions: Shen integer? includes integral real floats,
+# while dictionary hashing must follow numeric equality through compound keys
+# and signed zero.
+@assert valeq(shen_eval("(integer? 4.0)"), true)
+@assert valeq(shen_eval("(integer? 4.5)"), false)
+@assert valeq(shen_eval("(integer? true)"), false)
+@assert valeq(shen_eval("(let D (shen.dict 8) (do (shen.dict-> D 1 \"int\") (shen.<-dict D 1.0)))"), "int")
+@assert valeq(shen_eval("(let D (shen.dict 8) (do (shen.dict-> D [1 -0.0] \"zero\") (shen.<-dict D [1 0.0])))"), "zero")
+println("  numeric predicate/hash contract: ok")
+
 let form = read_all("(define smoke-test X -> (* X X))")[1]
     Base.invokelatest(F["eval"], form)
     @assert Base.invokelatest(F["smoke-test"], 5) == 25

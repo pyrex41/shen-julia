@@ -789,15 +789,11 @@ function K_get(a6028, a6029, a6030)
 end
 
 function K_hash(a6036, a6037)
-    while true
-        local v6038 = K_shen_2e_mod(K_shen_2e_hashkey(a6036), a6037); begin if kl_eq(v6038, 0); return 1 else return v6038 end end
-    end
+    return kl_hash(a6036, a6037)
 end
 
 function K_shen_2e_hashkey(a6039)
-    while true
-        local v6040 = K_map(MKFUN(1, v6041 -> K_string_2d__3e_n(v6041)), K_explode(a6039)); return K_shen_2e_prodbutzero(v6040, 1)
-    end
+    return kl_hashkey(a6039)
 end
 
 function K_shen_2e_prodbutzero(a6042, a6043)

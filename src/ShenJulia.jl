@@ -30,6 +30,9 @@ function boot!(verbose::Bool=false)
     Prims.with_shen_stack() do
         Boot.setup_streams!()
         Boot.load_kernel!(verbose)
+        # Dictionary/package initialisation must use the same Shen-aware hash
+        # implementation that user dictionaries use after boot.
+        Prims.install_numeric_contract_builtins!()
         Boot.initialise!()
         # Swap in fast host implementations of hot list builtins, overriding the KL defs.
         Prims.install_fast_builtins!()

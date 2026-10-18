@@ -8,7 +8,7 @@ using ..Compiler
 
 export F, FA, GLOBALS, ERR, APP, MKFUN, PARTIAL, equal, BIND, MKTREE, ShenFn
 export defprim, eval_kl, compile_and_load!, force, mk_in_stream, mk_out_stream
-export max_frame_depth, reset_max_frame_depth!, ensure_port_prims!, install_fast_builtins!
+export max_frame_depth, reset_max_frame_depth!, ensure_port_prims!, install_fast_builtins!, install_numeric_contract_builtins!
 export with_shen_stack
 
 const F = Dict{String, Function}()      # public/dynamic table (string-keyed)
@@ -369,7 +369,9 @@ defprim("not", 1, function(x)
     return !x
 end)
 defprim("integer?", 1, function(x)
-    return x isa Integer && !isa(x, Bool) && isfinite(x)
+    # Shen treats an exact integral real float as an integer too.  Keep Bool
+    # out explicitly: Julia's Bool is an Integer subtype.
+    return x isa Real && !isa(x, Bool) && isfinite(x) && isinteger(x)
 end)
 
 # symbols / strings
@@ -668,6 +670,50 @@ function kl_pr(str, stream)
                              Base.invokelatest(F["shen.string->byte"], str, 0), 1)
 end
 
+# Shen equality is numeric across integer and floating representations, so a
+# dictionary hash must canonicalise those representations as well. Julia's
+# hash already agrees for ordinary equal numbers, but distinguishes -0.0 from
+# 0.0 and does not recurse through Shen Cons/AbsVector values.
+function shen_hash_value(x, seed::UInt=UInt(0))
+    if x isa Number && !isa(x, Bool)
+        if x isa AbstractFloat && x == 0
+            return hash(0.0, seed)
+        end
+        return hash(x, seed)
+    elseif x isa ShenSymbol
+        return hash(x.name, seed)
+    elseif x isa String
+        return hash(x, seed)
+    elseif x isa Bool
+        return hash(x, seed)
+    elseif x === NIL
+        return hash(:shen_nil, seed)
+    elseif x isa Cons
+        return shen_hash_value(x.t, shen_hash_value(x.h, hash(:shen_cons, seed)))
+    elseif x isa AbsVector
+        h = hash(:shen_vector, seed)
+        h = hash(x.n, h)
+        for i in 1:x.n
+            h = shen_hash_value(get(x.data, i, nothing), h)
+        end
+        return h
+    end
+    return hash(x, seed)
+end
+
+function kl_hashkey(x)
+    # K_hash applies the bucket modulus; return a non-negative machine integer
+    # so it remains compatible with the kernel's arithmetic implementation.
+    h = shen_hash_value(x)
+    return Int(h % UInt(typemax(Int)))
+end
+
+function kl_hash(x, size)
+    size isa Integer && size > 0 || ERR("hash: invalid table size")
+    bucket = mod(kl_hashkey(x), size)
+    return bucket == 0 ? 1 : bucket
+end
+
 # Which builtins to override is an empirical, per-function decision (see bin/bench_builtins.jl):
 #   reverse  -> 5.7x faster, identical semantics                       [native]
 #   length   -> ~1.35x faster, identical semantics                     [native]
@@ -693,10 +739,19 @@ end
 
 # Kept for API compatibility (boot! calls it): the natives are installed at module
 # load now, so this only re-asserts their F entries (a driver may have replaced one).
+function install_numeric_contract_builtins!()
+    # Install before shen.initialise builds package/property dictionaries: the
+    # same hash function must be used for insertion and lookup.
+    setfn!("hash", kl_hash, 2)
+    setfn!("shen.hashkey", kl_hashkey, 1)
+    return nothing
+end
+
 function install_fast_builtins!()
     for (nm, (ar, fn)) in NATIVE_IMPLS
         F[nm] isa ShenFn && F[nm].fn === fn || setfn!(nm, fn, ar)
     end
+    install_numeric_contract_builtins!()
     return nothing
 end
 
