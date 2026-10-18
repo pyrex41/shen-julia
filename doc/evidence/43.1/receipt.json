@@ -1,0 +1,42 @@
+{
+  "date": "2026-10-18",
+  "kernel_commit": "715824a52b55e9c81a9501df8548ff3edd8411f5",
+  "release_kl_files_byte_identical": 24,
+  "release_test_files_byte_identical": 73,
+  "canonical": {
+    "command": [
+      "julia",
+      "--project=.",
+      "bin/run_canonical.jl"
+    ],
+    "environment": {
+      "SHEN_JULIA_NO_SYSIMAGE": "1"
+    },
+    "julia_version": "1.12.1",
+    "passed": 154,
+    "failed": 0,
+    "context": "Fresh boot; y-or-n? noninteractive true; byte character capability remains false",
+    "report_groups": 40
+  },
+  "combined_runner": {
+    "command": [
+      "julia",
+      "--project=.",
+      "run-tests.jl"
+    ],
+    "program_tests": {
+      "pass": 19,
+      "fail": 0
+    },
+    "informational_harness": {
+      "pass": 152,
+      "fail": 2
+    },
+    "baseline": "8657ca3 also has typed-structures diagnostic and Montague invalid-parse failures (141/2 on the 143-case 42.2 harness)"
+  },
+  "artifacts": {
+    "canonical.log.gz": "afbc0aa76654b45bcbf4a84f8f64b49a4e65e1f410a361762457f2d4dd153449",
+    "combined-43.1.log.gz": "66a8ccee68b8472e1045a2125d50fbae6fb4086f7d71caa02ce16b35fa33254f",
+    "combined-42.2-baseline.log.gz": "486f0dd10b46fda16432fe5ce31b04fd00352435b799f8cf5127b8cb0d578b82"
+  }
+}

@@ -251,3 +251,16 @@ nix shell .#toolchain
 If direnv is installed, `direnv allow` opts this checkout into the same dev
 shell automatically. Nothing activates until that explicit authorization, and
 Nix is never required at runtime.
+
+## 43.1 qualification
+
+A fresh boot of `bin/run_canonical.jl` passes all 154 canonical assertions
+(40 reports) on Julia 1.12.1. Set `SHEN_JULIA_NO_SYSIMAGE=1` after changing
+kernels until rebuilding any sysimage. All 24 release KL files and 73 test
+files match the verified community 43.1 release.
+
+The separate `run-tests.jl` driver passes its 19 program checks. Its subsequent
+informational harness has two failures, in typed-structure diagnostics and
+Montague invalid parsing; both reproduce on the old 42.2 baseline. This
+combined runner is a separate result from the fresh canonical run. See the
+[portable receipt](doc/evidence/43.1/receipt.json) and retained logs.
