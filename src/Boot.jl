@@ -1,7 +1,7 @@
-# Boot: load the community ShenOSKernel 42.2 KLambda kernel and run its
+# Boot: load the community ShenOSKernel 43.1 KLambda kernel and run its
 # initialisation (shen.initialise, the features extension, stlib.initialise).
 #
-# Every 42.2 .kl file contains only defuns, so load order is irrelevant: the
+# Every 43.1 .kl file contains only defuns, so load order is irrelevant: the
 # baked registrar / source loader registers them all, and state (globals, the
 # shen.dict-based *property-vector*, arities, lambda forms, *macros*, …) is
 # built afterwards by initialise!. See klambda/PROVENANCE.md.
@@ -19,13 +19,13 @@ using Serialization
 
 export load_kernel!, initialise!, run_kl_string, find_kldir, precompile_kernel_to_file!
 
-# Load order follows shen-cl / the community install order. With 42.2 nothing
+# Load order follows shen-cl / the community install order. With 43.1 nothing
 # here runs at load time (all forms are defuns), so the order only matters for
 # last-wins duplicate names. `stlib` is the precompiled standard library
 # (klambda/stlib.kl), initialised by `stlib.initialise` after the kernel.
 # The experimental `namespaces`, `type-annotations` and
 # `programmable-pattern-matching` extensions are vendored but not loaded (the
-# same set shen-cl's kernel-42.2 boot loads).
+# same set shen-cl's kernel-43.1 boot loads).
 const KERNEL_FILES = [
     "toplevel", "core", "sys", "dict", "sequent", "yacc", "reader", "prolog",
     "track", "load", "writer", "macros", "declarations", "types", "t-star", "init",
@@ -33,7 +33,7 @@ const KERNEL_FILES = [
     "stlib",
 ]
 
-# Feature symbols registered through shen.x.features.initialise (the 42.2
+# Feature symbols registered through shen.x.features.initialise (the 43.1
 # features extension); `shen/julia` mirrors shen-cl's `shen/cl`.
 const PORT_FEATURES = ["shen/julia"]
 
@@ -46,7 +46,7 @@ function find_kldir()
     end
 
     candidates = [
-        "../ShenOSKernel-42.2/klambda",
+        "../ShenOSKernel-43.1/klambda",
         joinpath(@__DIR__, "..", "klambda"),
     ]
     for c in candidates
@@ -145,7 +145,7 @@ function _call_if_defined(name::String, args...)
 end
 
 function initialise!()
-    # ShenOSKernel 42.2: shen.initialise builds the environment (globals,
+    # ShenOSKernel 43.1: shen.initialise builds the environment (globals,
     # *property-vector* as a shen.dict, *macros*, …), the lambda forms and the
     # signed-function table. Then the port registers its features (as shen-cl
     # does) and initialises the precompiled StLib (doc/port-upgrades.md, 41.1:

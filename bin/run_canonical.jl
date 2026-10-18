@@ -6,7 +6,7 @@ using ShenJulia: Prims, Runtime
 const F = Prims.F; const G = Prims.GLOBALS
 boot!(false)
 Prims.define_named!("y-or-n?", 1, _ -> true)
-Prims.define_named!("shen.char-stoutput?", 1, _ -> false)
+Prims.define_named!("char-stream?", 1, _ -> false)
 cd("tests") do
     Prims.with_shen_stack() do
         Prims.force(Base.invokelatest(F["load"], "harness.shen"))
@@ -15,4 +15,4 @@ cd("tests") do
 end
 # kerneltests.shen ends with (reset), which zeroes the counters, so the
 # authoritative result is the harness's own "passed ... N / failed ... M" report
-# printed above (143/0 on ShenOSKernel 42.2).
+# printed above (the 43.1 suite count is reported by the harness).

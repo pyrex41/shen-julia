@@ -543,22 +543,24 @@ defprim("close", 1, function(st)
     return NIL
 end)
 
-# The two port primitives required by reader.kl/writer.kl (and macros) for
-# deciding byte vs. char paths on streams. Must be present (returning false for
-# our byte streams) before any writer/reader code runs during init or load.
-# Registered via defprim so ARITY + F + FA are populated early.
-defprim("shen.char-stinput?", 1, _st -> false)
-defprim("shen.char-stoutput?", 1, _st -> false)
+# ShenOSKernel 43.1's public character-stream interface. This port uses
+# byte-oriented streams, so the capability predicate is false. The other two
+# names still need callable host definitions because the kernel records their
+# metadata during initialisation; invoking them on this port is unsupported.
+defprim("char-stream?", 1, _st -> false)
+defprim("read-unit-string", 1, _st -> ERR("read-unit-string: character streams are unsupported"))
+defprim("write-string", 2, (_str, _st) -> ERR("write-string: character streams are unsupported"))
 
 # Re-ensure (for sysimage binding pruning + partial init + post-load loss).
 # Under --sysimage, top-level defprim side effects for these (only host-provided,
 # never in klambda defuns) may result in F having only ~45 entries and no shen.*
 # at "using" time; kernel load populates other shen.* but not these. Reader/writer
-# .shen loads (even plain define .shen) hit "not a function: shen.char-stoutput?"
+# .shen loads (even plain define .shen) must find the public character API
 # via APP symbol lookup unless present. Safe/idempotent to re-call; also sets FA/ARITY/PRIMS.
 function ensure_port_prims!()
-    defprim("shen.char-stinput?", 1, _st -> false)
-    defprim("shen.char-stoutput?", 1, _st -> false)
+    defprim("char-stream?", 1, _st -> false)
+    defprim("read-unit-string", 1, _st -> ERR("read-unit-string: character streams are unsupported"))
+    defprim("write-string", 2, (_str, _st) -> ERR("write-string: character streams are unsupported"))
 end
 
 defprim("exit", 1, function(n)
@@ -652,15 +654,15 @@ end
 # stdout, but `pr` to a real file stream always writes. Match that so shen-julia agrees
 # on bifrost's hardened hush-file-write case. Compares stream identity to *stoutput*
 # (host ===), avoiding any KL stream-equality semantics. Otherwise identical to the
-# 42.2 kernel `pr` (writer.kl); the helpers are looked up at call time so drivers
-# that redefine shen.char-stoutput? are honoured.
+# 43.1 kernel `pr` (writer.kl); the helpers are looked up at call time so drivers
+# that redefine char-stream? are honoured.
 function kl_pr(str, stream)
     if get(GLOBALS, "*hush*", false) === true && stream === get(GLOBALS, "*stoutput*", nothing)
         return str
     end
-    cso = get(F, "shen.char-stoutput?", nothing)
+    cso = get(F, "char-stream?", nothing)
     if cso !== nothing && Base.invokelatest(cso, stream) === true
-        return Base.invokelatest(F["shen.write-string"], str, stream)
+        return Base.invokelatest(F["write-string"], str, stream)
     end
     return Base.invokelatest(F["shen.write-chars"], str, stream,
                              Base.invokelatest(F["shen.string->byte"], str, 0), 1)
@@ -764,7 +766,7 @@ let _ = force, _ = Compiler, _ = setfn!, _ = APP, _ = PARTIAL, _ = BIND, _ = MKT
 end
 
 # --- Baked kernel (fast boot) ---------------------------------------------
-# bin/gen_kernel.jl compiles the whole ShenOSKernel 42.2 kernel (and its precompiled StLib) ahead of time into
+# bin/gen_kernel.jl compiles the whole ShenOSKernel 43.1 kernel (and its precompiled StLib) ahead of time into
 # kernel_generated.jl: top-level `function K_...` methods (so PRECOMPILATION
 # bakes them — no per-startup Core.eval/JIT of ~1138 functions) plus
 # `_register_baked_kernel!()` which wires them into F/ARITY at boot. Every name
@@ -774,7 +776,7 @@ end
 # NOTE: Julia does not track an isfile() result as a precompile dependency, so if
 # you (re)generate kernel_generated.jl you must force a recompile of this module
 # (a content change here, or `Base.compilecache`), or the stale image silently
-# keeps HAS_BAKED_KERNEL=false. [baked-kernel guard v8 — ShenOSKernel 42.2, StLib from klambda/stlib.kl]
+# keeps HAS_BAKED_KERNEL=false. [baked-kernel guard v9 — ShenOSKernel 43.1, StLib from klambda/stlib.kl]
 if isfile(joinpath(@__DIR__, "kernel_generated.jl"))
     include(joinpath(@__DIR__, "kernel_generated.jl"))
     const HAS_BAKED_KERNEL = true

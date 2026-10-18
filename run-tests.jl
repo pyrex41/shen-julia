@@ -1,5 +1,5 @@
 #!/usr/bin/env julia
-# Driver to boot the ShenOSKernel 42.2 kernel and run the test programs in tests/.
+# Driver to boot the ShenOSKernel 43.1 kernel and run the test programs in tests/.
 #
 # Structure:
 #   1. Boot the kernel.
@@ -28,7 +28,7 @@ using ShenJulia.Prims
 
 const G = Prims.GLOBALS
 
-println("Loading ShenOSKernel 42.2 kernel...")
+println("Loading ShenOSKernel 43.1 kernel...")
 t0 = time()
 boot!(get(ENV, "SHEN_VERBOSE", "") == "1")
 t1 = time()
@@ -75,12 +75,12 @@ end
 println("  eval define: ok")
 
 # --- program tests ----------------------------------------------------------
-# Non-interactive setup: type checking off, and y-or-n? / char-stoutput? stubbed
+# Non-interactive setup: type checking off, and y-or-n? / char-stream? stubbed
 # so partial-function tracking prompts and the writer never block or error.
 G["shen.*tc*"] = false
 G["*tc*"] = false
 regfn!("y-or-n?", 1, _ -> true)
-regfn!("shen.char-stoutput?", 1, _ -> false)
+regfn!("char-stream?", 1, _ -> false)
 
 # (name, [files to load], [(expr, expected-literal), ...])
 const TESTS = [

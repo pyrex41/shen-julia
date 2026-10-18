@@ -6,7 +6,7 @@ const F = Prims.F; const G = Prims.GLOBALS
 boot!(false)
 G["shen.*tc*"]=false; G["*tc*"]=false
 Prims.define_named!("y-or-n?", 1, _ -> true)
-Prims.define_named!("shen.char-stoutput?", 1, _ -> false)
+Prims.define_named!("char-stream?", 1, _ -> false)
 if get(ENV, "SHEN_MAXINF", "") != ""
     G["shen.*maxinferences*"] = parse(Int, ENV["SHEN_MAXINF"])
 end
