@@ -37,6 +37,20 @@
   "artifacts": {
     "canonical.log.gz": "afbc0aa76654b45bcbf4a84f8f64b49a4e65e1f410a361762457f2d4dd153449",
     "combined-43.1.log.gz": "66a8ccee68b8472e1045a2125d50fbae6fb4086f7d71caa02ce16b35fa33254f",
-    "combined-42.2-baseline.log.gz": "486f0dd10b46fda16432fe5ce31b04fd00352435b799f8cf5127b8cb0d578b82"
+    "combined-42.2-baseline.log.gz": "486f0dd10b46fda16432fe5ce31b04fd00352435b799f8cf5127b8cb0d578b82",
+    "canonical-numeric.log.gz": "b2b8419a7936fb24bfb6714b3c32b7a14af3215463a1f86fb08bc99af5f52da2"
+  },
+  "numeric_contract_fix": {
+    "commit": "9655446d9f67561cfbbf7336635869b673b471c9",
+    "fresh_canonical": {
+      "passed": 154,
+      "failed": 0
+    },
+    "focused": [
+      "integer? integral float and Boolean distinction",
+      "dictionary mixed numeric key",
+      "dictionary compound signed-zero key"
+    ],
+    "artifact": "canonical-numeric.log.gz"
   }
 }
