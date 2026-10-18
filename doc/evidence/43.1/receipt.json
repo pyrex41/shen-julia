@@ -1,7 +1,7 @@
 {
   "date": "2026-10-18",
   "kernel_commit": "715824a52b55e9c81a9501df8548ff3edd8411f5",
-  "release_kl_files_byte_identical": 24,
+  "release_kl_files_byte_identical": 23,
   "release_test_files_byte_identical": 73,
   "canonical": {
     "command": [

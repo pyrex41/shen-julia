@@ -256,7 +256,7 @@ Nix is never required at runtime.
 
 A fresh boot of `bin/run_canonical.jl` passes all 154 canonical assertions
 (40 reports) on Julia 1.12.1. Set `SHEN_JULIA_NO_SYSIMAGE=1` after changing
-kernels until rebuilding any sysimage. All 24 release KL files and 73 test
+kernels until rebuilding any sysimage. All 23 release KL files and 73 test
 files match the verified community 43.1 release.
 
 The separate `run-tests.jl` driver passes its 19 program checks. Its subsequent

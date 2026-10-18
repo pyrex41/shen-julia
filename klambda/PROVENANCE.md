@@ -1,6 +1,6 @@
 # Kernel provenance
 
-shen-julia vendors the community ShenOSKernel 43.1 release byte-for-byte in
+shen-julia vendors the 23 official community ShenOSKernel 43.1 release files byte-for-byte in
 the kernel directories (`klambda/`, `sources/`, `tests/`, `lib/`, `doc/`,
 `extensions/`, and `assets/`). This file is the sole local addition in that
 tree.
