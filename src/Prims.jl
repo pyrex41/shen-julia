@@ -831,7 +831,7 @@ end
 # NOTE: Julia does not track an isfile() result as a precompile dependency, so if
 # you (re)generate kernel_generated.jl you must force a recompile of this module
 # (a content change here, or `Base.compilecache`), or the stale image silently
-# keeps HAS_BAKED_KERNEL=false. [baked-kernel guard v9 — ShenOSKernel 43.1, StLib from klambda/stlib.kl]
+# keeps HAS_BAKED_KERNEL=false. [baked-kernel guard v10 — ShenOSKernel 43.1 at upstream ec16a9f, StLib from klambda/stlib.kl]
 if isfile(joinpath(@__DIR__, "kernel_generated.jl"))
     include(joinpath(@__DIR__, "kernel_generated.jl"))
     const HAS_BAKED_KERNEL = true
