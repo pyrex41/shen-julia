@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/)
 
 ## [Unreleased]
 
+### Changed (kernel 43.1 at ec16a9f)
+- **Kernel: ShenOSKernel 43.1 as built at upstream `ec16a9f`.** That is the 43.1 release
+  plus shen-sources#117: `shen.by-hypothesis` and `shen.search-user-datatypes` dereference
+  the checked term once per call instead of once per hypothesis/datatype rule (b-typed:
+  about -13% instructions). `ShenOSKernel-43.1-ec16a9f.tar.gz` SHA-256 `060066a8…9baacd`;
+  `(version)` stays `"43.1"`. The baked kernel is regenerated with `bin/gen_kernel.jl`,
+  keeping the native `hash`/`shen.hashkey` bodies from the numeric/hashing fix, and the
+  baked-kernel guard moves to v10. See `klambda/PROVENANCE.md`.
+
 ### Changed (kernel-42.2)
 - **Kernel: ShenOSKernel 42.2, adopted wholesale** (option (a) of #10). The
   community release from `Shen-Language/shen-sources` tag `shen-42.2` (commit

@@ -5,7 +5,7 @@ A [Julia](https://julialang.org) port of the Shen language, on the community
 
 > **Kernel lineage:** this vendors **ShenOSKernel 43.1** from
 > [`Shen-Language/shen-sources`](https://github.com/Shen-Language/shen-sources)
-> (tag `shen-43.1`) byte-for-byte, replacing the Tarver S42.0 lineage used until
+> (upstream `ec16a9f`: the 43.1 release plus shen-sources#117) byte-for-byte, replacing the Tarver S42.0 lineage used until
 > 2026-10. `(version)` reports `"43.1"`. Provenance, SHA-256 and the lineage
 > choice are in [`klambda/PROVENANCE.md`](klambda/PROVENANCE.md).
 
