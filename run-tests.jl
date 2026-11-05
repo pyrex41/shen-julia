@@ -1,5 +1,5 @@
 #!/usr/bin/env julia
-# Driver to boot the ShenOSKernel 43.1 kernel and run the test programs in tests/.
+# Driver to boot the ShenOSKernel 43.2 kernel and run the test programs in tests/.
 #
 # Structure:
 #   1. Boot the kernel.
@@ -28,7 +28,7 @@ using ShenJulia.Prims
 
 const G = Prims.GLOBALS
 
-println("Loading ShenOSKernel 43.1 kernel...")
+println("Loading ShenOSKernel 43.2 kernel...")
 t0 = time()
 boot!(get(ENV, "SHEN_VERBOSE", "") == "1")
 t1 = time()
