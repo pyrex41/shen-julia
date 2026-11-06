@@ -1,4 +1,4 @@
-# Boot: load the community ShenOSKernel 43.1 KLambda kernel and run its
+# Boot: load the community ShenOSKernel 43.2 KLambda kernel and run its
 # initialisation (shen.initialise, the features extension, stlib.initialise).
 #
 # Every 43.1 .kl file contains only defuns, so load order is irrelevant: the
@@ -46,7 +46,7 @@ function find_kldir()
     end
 
     candidates = [
-        "../ShenOSKernel-43.1/klambda",
+        "../ShenOSKernel-43.2/klambda",
         joinpath(@__DIR__, "..", "klambda"),
     ]
     for c in candidates
@@ -145,7 +145,7 @@ function _call_if_defined(name::String, args...)
 end
 
 function initialise!()
-    # ShenOSKernel 43.1: shen.initialise builds the environment (globals,
+    # ShenOSKernel 43.2: shen.initialise builds the environment (globals,
     # *property-vector* as a shen.dict, *macros*, …), the lambda forms and the
     # signed-function table. Then the port registers its features (as shen-cl
     # does) and initialises the precompiled StLib (doc/port-upgrades.md, 41.1:

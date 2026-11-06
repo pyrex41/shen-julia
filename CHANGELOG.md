@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/)
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-05
+
+Release on community ShenOSKernel 43.2 (tag `shen-43.2`, commit `e6947f5`), the kernel
+Yggdrasil v0.1.0 requires of a stage-1 host.
+
+### Changed (kernel 43.2)
+- **Kernel: ShenOSKernel 43.2** (`shen-43.2`, `ShenOSKernel-43.2.tar.gz` SHA-256 `23c71508…7f32`),
+  vendored byte-for-byte. `(version)` is `"43.2"`. Changes over the ec16a9f import: type-annotations
+  reification no longer reads Prolog-variable offsets, `*version*`, benchmark docs and
+  `tests/benchmark-coverage.shen`. The baked kernel is regenerated with `bin/gen_kernel.jl`
+  (native `hash`/`shen.hashkey` bodies kept) and the baked-kernel guard moves to v11.
+
 ### Changed (kernel 43.1 at ec16a9f)
 - **Kernel: ShenOSKernel 43.1 as built at upstream `ec16a9f`.** That is the 43.1 release
   plus shen-sources#117: `shen.by-hypothesis` and `shen.search-user-datatypes` dereference
