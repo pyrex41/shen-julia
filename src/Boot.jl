@@ -144,6 +144,22 @@ function _call_if_defined(name::String, args...)
     return true
 end
 
+# REPL EOF, as Shen/JIT does it: only the REPL's own read checks for EOF, on the first
+# byte of a line, then exits 0 at the prompt. A program reading (stinput) still sees
+# -1 / "error: empty stream".
+const REPL_EOF_KL = """
+(defun shen.read-evaluate-print ()
+  (let Package (value shen.*package*)
+    (let Lineread (shen.package-user-input Package (shen.x.julia.repl-read (stinput)))
+      (let History (shen.update-history)
+        (shen.evaluate-lineread Lineread History (value shen.*tc*))))))
+(defun shen.x.julia.repl-read (Stream)
+  (let Byte (shen.my-read-byte Stream)
+    (if (= Byte -1)
+        (do (nl 1) (exit 0))
+        (shen.read-loop Stream Byte () (lambda X (shen.return? X))))))
+"""
+
 function initialise!()
     # ShenOSKernel 43.2: shen.initialise builds the environment (globals,
     # *property-vector* as a shen.dict, *macros*, …), the lambda forms and the
@@ -161,6 +177,9 @@ function initialise!()
         _call_if_defined("shen.x.features.initialise", feats)
     end
     _call_if_defined("stlib.initialise")
+    for f in read_all(REPL_EOF_KL)
+        Prims.force(Prims.eval_kl(f))
+    end
     return nothing
 end
 
