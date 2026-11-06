@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/)
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-05
+
+Release on community ShenOSKernel 43.2 (tag `shen-43.2`, commit `e6947f5`), the kernel
+Yggdrasil v0.1.0 requires of a stage-1 host.
+
 ### Changed (kernel 43.2)
 - **Kernel: ShenOSKernel 43.2** (`shen-43.2`, `ShenOSKernel-43.2.tar.gz` SHA-256 `23c71508…7f32`),
   vendored byte-for-byte. `(version)` is `"43.2"`. Changes over the ec16a9f import: type-annotations
