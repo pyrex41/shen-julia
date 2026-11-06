@@ -17,7 +17,7 @@ using .Prims
 using .Boot
 
 # Re-export convenience API
-export boot!, eval_kl, run_kl_string, to_str, intern, cons, NIL, equal, repl
+export boot!, eval_kl, run_kl_string, to_str, intern, cons, NIL, equal
 export F, GLOBALS
 
 const F = Prims.F
@@ -41,28 +41,6 @@ end
 
 # User/REPL evaluation can recurse arbitrarily deep too — keep it on the big stack.
 run_kl_string(src) = Prims.with_shen_stack(() -> Boot.run_kl_string(src))
-
-function repl()
-    boot!(false)
-    println("Shen/Julia $(Prims.GLOBALS["*port*"]) — kernel $(Base.invokelatest(Prims.F["version"]))")
-    println("Type Shen forms at the prompt (empty line to quit).")
-    while true
-        print("shen> ")
-        flush(stdout)
-        line = readline()
-        isempty(strip(line)) && break
-        try
-            result = run_kl_string(line)
-            result !== nothing && println(to_str(result))
-        catch e
-            if e isa ShenExcn
-                println("error: ", e.msg)
-            else
-                println("error: ", e)
-            end
-        end
-    end
-end
 
 # --- Precompile workload ------------------------------------------------------
 # The kernel is baked into this package (src/kernel_generated.jl), but Julia only

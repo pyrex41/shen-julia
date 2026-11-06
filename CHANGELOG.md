@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/)
 
 ## [Unreleased]
 
+### Changed (REPL EOF)
+- The REPL is now the kernel's own `shen.repl` (bare `shen` / `shen repl` go through the
+  standard launcher). `shen.read-evaluate-print` is replaced at boot (`Boot.REPL_EOF_KL`) with
+  Shen/JIT's design: only the REPL's own read checks for EOF, on the first byte of a line, and
+  exits 0. A program reading `(stinput)` still sees `-1` / `error: empty stream`. The host-side
+  `ShenJulia.repl()` loop is removed (it quit on an empty line and could not read multi-line
+  forms). Regression test: `bin/test_repl_eof.sh`.
+
 ## [0.3.0] - 2026-11-05
 
 Release on community ShenOSKernel 43.2 (tag `shen-43.2`, commit `e6947f5`), the kernel

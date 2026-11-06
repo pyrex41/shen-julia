@@ -13,8 +13,8 @@
 #   shen                        -> interactive REPL
 #   shen --boot-only            -> boot the kernel, print version, exit (timing aid)
 #
-# The interactive REPL is handled host-side so that closing stdin (EOF) exits
-# cleanly instead of looping forever (the canonical shen.repl behaviour).
+# The interactive REPL is the kernel's own (shen.repl); Boot.initialise! replaces
+# its read step so EOF at a prompt exits 0 (same design as Shen/JIT).
 
 # The bin/shen wrapper always passes --project, so the environment is already
 # active; we deliberately do NOT call Pkg.activate here (it prints an "Activating
@@ -42,14 +42,7 @@ if length(ARGV) >= 1 && ARGV[1] == "--boot-only"
     exit(0)
 end
 
-# Bare invocation, or an explicit `repl` with no extra args: interactive REPL
-# with clean-on-EOF exit (repl() boots the kernel itself).
-if isempty(ARGV) || (length(ARGV) == 1 && ARGV[1] == "repl")
-    repl()
-    exit(0)
-end
-
-# Everything else: hand off to the kernel's standard launcher for cross-port
+# Everything else, including bare `shen` and `shen repl`: hand off to the kernel's standard launcher for cross-port
 # parity. argv[0] is the program name (used in --help / error text).
 boot!(get(ENV, "SHEN_VERBOSE", "") == "1")
 Prims.with_shen_stack() do
