@@ -11,6 +11,7 @@ cd("tests") do
     Prims.with_shen_stack() do
         Prims.force(Base.invokelatest(F["load"], "harness.shen"))
         Prims.force(Base.invokelatest(F["load"], "kerneltests.shen"))
+        Prims.force(Base.invokelatest(F["load"], "regressions/factoriser-cond.shen"))
     end
 end
 # kerneltests.shen ends with (reset), which zeroes the counters, so the

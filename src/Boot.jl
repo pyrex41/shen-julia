@@ -1,4 +1,4 @@
-# Boot: load the community ShenOSKernel 43.2 KLambda kernel and run its
+# Boot: load the community ShenOSKernel 43.4 KLambda kernel and run its
 # initialisation (shen.initialise, the features extension, stlib.initialise).
 #
 # Every 43.1 .kl file contains only defuns, so load order is irrelevant: the
@@ -46,7 +46,7 @@ function find_kldir()
     end
 
     candidates = [
-        "../ShenOSKernel-43.2/klambda",
+        "../ShenOSKernel-43.4/klambda",
         joinpath(@__DIR__, "..", "klambda"),
     ]
     for c in candidates
@@ -161,7 +161,7 @@ const REPL_EOF_KL = """
 """
 
 function initialise!()
-    # ShenOSKernel 43.2: shen.initialise builds the environment (globals,
+    # ShenOSKernel 43.4: shen.initialise builds the environment (globals,
     # *property-vector* as a shen.dict, *macros*, …), the lambda forms and the
     # signed-function table. Then the port registers its features (as shen-cl
     # does) and initialises the precompiled StLib (doc/port-upgrades.md, 41.1:
@@ -177,6 +177,9 @@ function initialise!()
         _call_if_defined("shen.x.features.initialise", feats)
     end
     _call_if_defined("stlib.initialise")
+    # Redefining a baked method is not allowed while the package is precompiling (the
+    # precompile workload boots the kernel); the REPL is not exercised there anyway.
+    ccall(:jl_generating_output, Cint, ()) == 1 && return nothing
     for f in read_all(REPL_EOF_KL)
         Prims.force(Prims.eval_kl(f))
     end
