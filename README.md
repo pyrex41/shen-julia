@@ -1,12 +1,12 @@
 # Shen/Julia
 
 A [Julia](https://julialang.org) port of the Shen language, on the community
-**ShenOSKernel 43.2** kernel (the one shen-scheme 0.50 ships).
+**ShenOSKernel 43.4** kernel (the one shen-scheme 0.50 ships).
 
-> **Kernel lineage:** this vendors **ShenOSKernel 43.2** from
+> **Kernel lineage:** this vendors **ShenOSKernel 43.4** from
 > [`Shen-Language/shen-sources`](https://github.com/Shen-Language/shen-sources)
-> (tag `shen-43.2`) byte-for-byte, replacing the Tarver S42.0 lineage used until
-> 2026-10. `(version)` reports `"43.2"`. Provenance, SHA-256 and the lineage
+> (tag `shen-43.4`) byte-for-byte, replacing the Tarver S42.0 lineage used until
+> 2026-10. `(version)` reports `"43.4"`. Provenance, SHA-256 and the lineage
 > choice are in [`klambda/PROVENANCE.md`](klambda/PROVENANCE.md).
 
 Shen programs compile to native Julia methods (one `K_<name>` method per Shen
@@ -55,7 +55,7 @@ your `PATH` or call it directly.
 # Interactive REPL (Ctrl-D / EOF exits cleanly)
 ./bin/shen
 
-# Version banner (contains 43.2)
+# Version banner (contains 43.4)
 ./bin/shen --version
 ```
 
@@ -155,7 +155,7 @@ program, optionally as its own sysimage), see the Yggdrasil builder
 
 ## Status
 
-- **Kernel:** ShenOSKernel **43.2** (`(version)` reports `"43.2"`), with the
+- **Kernel:** ShenOSKernel **43.4** (`(version)` reports `"43.4"`), with the
   precompiled standard library (`klambda/stlib.kl`) loaded.
 - **Tests:** official `tests/kerneltests.shen` passes **154/154** via
   `julia --project=. bin/run_canonical.jl` (loads `harness.shen` +
@@ -186,13 +186,13 @@ julia --project=. bin/build_sysimage.jl
 
 The **standard library** is the kernel's precompiled `klambda/stlib.kl`; it is
 baked together with the kernel by `bin/gen_kernel.jl` and initialised at boot by
-`stlib.initialise` (`lib/stlib/` holds the matching 43.2 sources, for reference).
+`stlib.initialise` (`lib/stlib/` holds the matching 43.4 sources, for reference).
 
 The package also runs a small **precompile workload** (end of `src/ShenJulia.jl`):
 it boots the kernel once while Julia precompiles the package, so the native code
 for `shen.initialise`, `stlib.initialise` and the common eval/print paths is
 cached in the package image, then restores every runtime table. Without it a
-from-source start spends ~40 s JIT-compiling the 43.2 initialisation code; with
+from-source start spends ~40 s JIT-compiling the 43.4 initialisation code; with
 it a start without a sysimage takes ~5 s. Set `SHEN_JULIA_NO_WORKLOAD=1` before
 the package is compiled to skip it.
 
@@ -205,15 +205,15 @@ Repository layout:
 | `src/Compiler.jl` | KL → Julia codegen; `INLINE_PRIM` hot-path inlines |
 | `src/Prims.jl` | Host primitives, `APP`/`PARTIAL`, `eval_kl`, baked-kernel include |
 | `src/Boot.jl` | Kernel load (baked fast path + source fallback), `shen.initialise` + `stlib.initialise` |
-| `src/kernel_generated.jl` | **auto-generated** baked ShenOSKernel 43.2 + StLib (do not edit) |
+| `src/kernel_generated.jl` | **auto-generated** baked ShenOSKernel 43.4 + StLib (do not edit) |
 | `bin/shen`, `bin/shen.jl` | CLI launcher |
 | `bin/gen_kernel.jl` | Ahead-of-time kernel generator |
-| `lib/` | Vendored ShenOSKernel 43.2 libraries (`lib/stlib/` = sources of `klambda/stlib.kl`) |
+| `lib/` | Vendored ShenOSKernel 43.4 libraries (`lib/stlib/` = sources of `klambda/stlib.kl`) |
 | `bin/build_sysimage.jl` | Base sysimage builder (honours `SHEN_SYSIMAGE_CPU_TARGET`) |
 | `bin/build_app_sysimage.jl` | Bake a user `.shen` into its own sysimage |
 | `bin/yggdrasil-build.jl` | Yggdrasil stage-2 standalone-artifact builder |
 | `bin/run_canonical.jl` | Run the official kerneltests harness (154/154) |
-| `klambda/` | Vendored ShenOSKernel 43.2 KLambda (see `klambda/PROVENANCE.md`) |
+| `klambda/` | Vendored ShenOSKernel 43.4 KLambda (see `klambda/PROVENANCE.md`) |
 | `tests/` | Official Shen test suite + sample programs |
 
 ---
@@ -251,6 +251,12 @@ nix shell .#toolchain
 If direnv is installed, `direnv allow` opts this checkout into the same dev
 shell automatically. Nothing activates until that explicit authorization, and
 Nix is never required at runtime.
+
+## 43.4 qualification
+
+A fresh boot of `bin/run_canonical.jl` (`SHEN_JULIA_NO_SYSIMAGE=1`, Julia 1.12.7) passes all
+154 canonical assertions with 0 failures, plus the 43.4 `regressions/factoriser-cond.shen`
+checks. `run-tests.jl` passes its 19 program checks. `(version)` prints `43.4`.
 
 ## 43.2 qualification
 

@@ -1,4 +1,4 @@
-# ShenJulia: a Julia port of the Shen language (ShenOSKernel 43.2).
+# ShenJulia: a Julia port of the Shen language (ShenOSKernel 43.4).
 #
 # Architecture mirrors shen-lua: KLambda compiles to host source (Julia) which
 # is eval'd at boot. Primitives implement the ~35 KL operations; the kernel
@@ -46,7 +46,7 @@ run_kl_string(src) = Prims.with_shen_stack(() -> Boot.run_kl_string(src))
 # The kernel is baked into this package (src/kernel_generated.jl), but Julia only
 # caches NATIVE code in the package image for methods that actually run while the
 # package is being precompiled. Without this, every start pays the JIT for
-# shen.initialise / stlib.initialise (~40 s on ShenOSKernel 43.2: init.kl and the
+# shen.initialise / stlib.initialise (~40 s on ShenOSKernel 43.4: init.kl and the
 # StLib's initialise-* functions are huge). So boot the kernel once at precompile
 # time and exercise the common paths, then restore every mutable table to its
 # pre-boot contents so no runtime state leaks into the image (boot! rebuilds it at

@@ -545,7 +545,7 @@ defprim("close", 1, function(st)
     return NIL
 end)
 
-# ShenOSKernel 43.2's public character-stream interface. This port uses
+# ShenOSKernel 43.4's public character-stream interface. This port uses
 # byte-oriented streams, so the capability predicate is false. The other two
 # names still need callable host definitions because the kernel records their
 # metadata during initialisation; invoking them on this port is unsupported.
@@ -821,7 +821,7 @@ let _ = force, _ = Compiler, _ = setfn!, _ = APP, _ = PARTIAL, _ = BIND, _ = MKT
 end
 
 # --- Baked kernel (fast boot) ---------------------------------------------
-# bin/gen_kernel.jl compiles the whole ShenOSKernel 43.2 kernel (and its precompiled StLib) ahead of time into
+# bin/gen_kernel.jl compiles the whole ShenOSKernel 43.4 kernel (and its precompiled StLib) ahead of time into
 # kernel_generated.jl: top-level `function K_...` methods (so PRECOMPILATION
 # bakes them — no per-startup Core.eval/JIT of ~1138 functions) plus
 # `_register_baked_kernel!()` which wires them into F/ARITY at boot. Every name
@@ -831,7 +831,7 @@ end
 # NOTE: Julia does not track an isfile() result as a precompile dependency, so if
 # you (re)generate kernel_generated.jl you must force a recompile of this module
 # (a content change here, or `Base.compilecache`), or the stale image silently
-# keeps HAS_BAKED_KERNEL=false. [baked-kernel guard v11 — ShenOSKernel 43.2, StLib from klambda/stlib.kl]
+# keeps HAS_BAKED_KERNEL=false. [baked-kernel guard v12 — ShenOSKernel 43.4, StLib from klambda/stlib.kl]
 if isfile(joinpath(@__DIR__, "kernel_generated.jl"))
     include(joinpath(@__DIR__, "kernel_generated.jl"))
     const HAS_BAKED_KERNEL = true
