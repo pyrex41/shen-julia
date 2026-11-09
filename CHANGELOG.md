@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/)
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-09
+
+Release on community ShenOSKernel 43.4 (tag `shen-43.4`, commit `f34b307`).
+
 ### Changed (kernel 43.4)
 - **Kernel: ShenOSKernel 43.4** (`shen-43.4`, commit `f34b307`, `ShenOSKernel-43.4.tar.gz` SHA-256
   `15e7972e…a2756`), vendored byte-for-byte; `(version)` is `"43.4"`. 43.3 and 43.4 change 17 of
