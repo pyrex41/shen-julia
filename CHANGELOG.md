@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/)
 
 ## [Unreleased]
 
+### Changed (kernel 43.4)
+- **Kernel: ShenOSKernel 43.4** (`shen-43.4`, commit `f34b307`, `ShenOSKernel-43.4.tar.gz` SHA-256
+  `15e7972e…a2756`), vendored byte-for-byte; `(version)` is `"43.4"`. 43.3 and 43.4 change 17 of
+  the 22 KL files (1117 -> 1126 defuns): the StLib initialiser now uses `shen.declare-with-signature`
+  and `shen.update-lambda-table/precompiled`, and a `cond` with no matching clause raises
+  "condition failure". The baked kernel and StLib are regenerated together with `bin/gen_kernel.jl`
+  (native `hash`/`shen.hashkey` bodies kept); the baked-kernel guard moves to v12.
+
 ### Changed (REPL EOF)
 - The REPL is now the kernel's own `shen.repl` (bare `shen` / `shen repl` go through the
   standard launcher). `shen.read-evaluate-print` is replaced at boot (`Boot.REPL_EOF_KL`) with
